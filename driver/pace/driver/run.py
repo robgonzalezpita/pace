@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Tuple, Union
 
 import click
+import dace
 import dacite
 import f90nml
 import yaml
@@ -33,6 +34,8 @@ from pace.util.quantity import QuantityMetadata
 
 from .report import collect_data_and_write_to_file
 from .tendency_state import TendencyState
+from pace.dsl.dace.orchestrate import computepath_method
+from pace.dsl.dace.dace_config import dace_config
 
 
 @dataclasses.dataclass
@@ -562,7 +565,8 @@ class Driver:
             quantity_factory, stencil_factory = _setup_factories(
                 config=config, communicator=communicator
             )
-
+            # [TODO]: we need a better solution for this
+            dace_config.backend = stencil_factory.backend
             self.state = self.config.initialization_config.get_driver_state(
                 quantity_factory=quantity_factory, communicator=communicator
             )
@@ -576,29 +580,36 @@ class Driver:
                 phis=self.state.dycore_state.phis,
                 state=self.state.dycore_state,
             )
-
-            self.physics = fv3gfs.physics.Physics(
-                stencil_factory=stencil_factory,
-                grid_data=self.state.grid_data,
-                namelist=self.config.physics_config,
-                active_packages=["microphysics"],
+            self.dycore.update_state(
+                self.config.dycore_config.consv_te,
+                self.config.dycore_config.adiabatic,
+                self.config.dycore_config.dt_atmos,
+                self.config.dycore_config.n_split,
+                self.state.dycore_state,
             )
-            self.dycore_to_physics = update_atmos_state.DycoreToPhysics(
-                stencil_factory=stencil_factory,
-                dycore_config=self.config.dycore_config,
-                do_dry_convective_adjustment=self.config.do_dry_convective_adjustment,
-                dycore_only=self.config.dycore_only,
-            )
-            self.end_of_step_update = update_atmos_state.UpdateAtmosphereState(
-                stencil_factory=stencil_factory,
-                grid_data=self.state.grid_data,
-                namelist=self.config.physics_config,
-                comm=communicator,
-                grid_info=self.state.driver_grid_data,
-                quantity_factory=quantity_factory,
-                dycore_only=self.config.dycore_only,
-                apply_tendencies=self.config.apply_tendencies,
-            )
+            # [TODO]: turn off physics and end of state update for now
+            # self.physics = fv3gfs.physics.Physics(
+            #     stencil_factory=stencil_factory,
+            #     grid_data=self.state.grid_data,
+            #     namelist=self.config.physics_config,
+            #     active_packages=["microphysics"],
+            # )
+            # self.dycore_to_physics = update_atmos_state.DycoreToPhysics(
+            #     stencil_factory=stencil_factory,
+            #     dycore_config=self.config.dycore_config,
+            #     do_dry_convective_adjustment=self.config.do_dry_convective_adjustment,
+            #     dycore_only=self.config.dycore_only,
+            # )
+            # self.end_of_step_update = update_atmos_state.UpdateAtmosphereState(
+            #     stencil_factory=stencil_factory,
+            #     grid_data=self.state.grid_data,
+            #     namelist=self.config.physics_config,
+            #     comm=communicator,
+            #     grid_info=self.state.driver_grid_data,
+            #     quantity_factory=quantity_factory,
+            #     dycore_only=self.config.dycore_only,
+            #     apply_tendencies=self.config.apply_tendencies,
+            # )
             self.diagnostics = Diagnostics(
                 config=config.diagnostics_config,
                 partitioner=communicator.partitioner,
@@ -613,15 +624,29 @@ class Driver:
                 grid_data=self.state.grid_data,
                 metadata=self.state.dycore_state.ps.metadata,
             )
-            while time < end_time:
-                self._step(timestep=self.config.timestep.total_seconds())
-                time += self.config.timestep
-                self.diagnostics.store(time=time, state=self.state)
+            time_steps = int((end_time - time).seconds / self.config.timestep.seconds)
+            self._step_dycore_loop(self.state.dycore_state, time_steps)
+            # [TODO]: we need to find a way to switch between dace orchestration
+            #         and other backends
+            # while time < end_time:
+            #     self._step(timestep=self.config.timestep.total_seconds())
+            #     time += self.config.timestep
+            #     self.diagnostics.store(time=time, state=self.state)
             self.performance_config.collect_performance()
+
+    @computepath_method
+    def _step_dycore_loop(self, state: dace.constant, time_steps: int):
+        for _ in range(time_steps):
+            self.dycore.step_dynamics(state)
+            # [TODO]: these are not orchestrated yet, maybe callbacks?
+            #         also, many timing in fvdynamics were removed
+            # self.performance_config.collect_performance()
+            # time += self.config.timestep
+            # self.diagnostics.store(time=time, state=state)
 
     def _step(self, timestep: float):
         with self.performance_config.timestep_timer.clock("mainloop"):
-            self._step_dynamics(timestep=timestep)
+            self._step_dynamics(timestep=timestep, state=self.state.dycore_state)
             self._step_physics(timestep=timestep)
 
         self.performance_config.collect_performance()
@@ -629,11 +654,6 @@ class Driver:
     def _step_dynamics(self, timestep: float):
         self.dycore.step_dynamics(
             state=self.state.dycore_state,
-            conserve_total_energy=self.config.dycore_config.consv_te,
-            n_split=self.config.dycore_config.n_split,
-            do_adiabatic_init=False,
-            timestep=float(timestep),
-            timer=self.performance_config.timestep_timer,
         )
 
     def _step_physics(self, timestep: float):
