@@ -34,7 +34,7 @@ from pace.util.quantity import QuantityMetadata
 
 from .report import collect_data_and_write_to_file
 from .tendency_state import TendencyState
-from pace.dsl.dace.orchestrate import computepath_method
+from pace.dsl.dace.orchestrate import computepath_method, computepath_function
 from pace.dsl.dace.dace_config import dace_config
 
 
@@ -625,7 +625,19 @@ class Driver:
                 metadata=self.state.dycore_state.ps.metadata,
             )
             time_steps = int((end_time - time).seconds / self.config.timestep.seconds)
-            self._step_dycore_loop(self.state.dycore_state, time_steps)
+            dycore = self.dycore
+
+            @computepath_function
+            def _step_dycore_loop(state: dace.constant):  #:, time_steps: int):
+                for _ in range(5):
+                    dycore.step_dynamics(state)
+                    # [TODO]: these are not orchestrated yet, maybe callbacks?
+                    #         also, many timing in fvdynamics were removed
+                    # self.performance_config.collect_performance()
+                    # time += self.config.timestep
+                    # self.diagnostics.store(time=time, state=state)
+
+            _step_dycore_loop(self.state.dycore_state)  # , time_steps)
             # [TODO]: we need to find a way to switch between dace orchestration
             #         and other backends
             # while time < end_time:
@@ -633,16 +645,6 @@ class Driver:
             #     time += self.config.timestep
             #     self.diagnostics.store(time=time, state=self.state)
             self.performance_config.collect_performance()
-
-    @computepath_method
-    def _step_dycore_loop(self, state: dace.constant, time_steps: int):
-        for _ in range(time_steps):
-            self.dycore.step_dynamics(state)
-            # [TODO]: these are not orchestrated yet, maybe callbacks?
-            #         also, many timing in fvdynamics were removed
-            # self.performance_config.collect_performance()
-            # time += self.config.timestep
-            # self.diagnostics.store(time=time, state=state)
 
     def _step(self, timestep: float):
         with self.performance_config.timestep_timer.clock("mainloop"):
