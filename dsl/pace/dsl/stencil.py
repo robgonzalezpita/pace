@@ -27,7 +27,6 @@ from gt4py.storage.storage import Storage
 from gtc.passes.oir_pipeline import DefaultPipeline, OirPipeline
 from pace.util.decomposition import set_distributed_caches, write_decomposition
 
-import pace.dsl.future_stencil as future_stencil
 import pace.dsl.gt4py_utils as gt4py_utils
 import pace.util
 from pace.dsl.typing import Index3D, cast_to_index3d
