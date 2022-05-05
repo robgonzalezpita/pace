@@ -148,6 +148,10 @@ dmypy.json
 
 # GT4Py
 **/.gt_cache/
+**/.gt_cache_*/
+
+# DaCe
+**/.dacecache
 
 # Run outputs
 plot_output/
