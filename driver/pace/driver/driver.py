@@ -1,10 +1,12 @@
 import dataclasses
 import functools
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Any, Dict, Tuple, Union
 
 import dacite
+import yaml
 
 import fv3core
 import fv3gfs.physics
@@ -18,14 +20,8 @@ import pace.util.grid
 from pace.stencils import update_atmos_state
 
 from . import diagnostics
-from .comm import CommConfig
-from .initialization import (
-    BaroclinicConfig,
-    InitializationConfig,
-    PredefinedStateConfig,
-    RestartConfig,
-    SerialboxConfig,
-)
+from .comm import CreatesCommSelector
+from .initialization import InitializerSelector
 from .performance import PerformanceConfig
 
 
@@ -40,7 +36,7 @@ class DriverConfig:
     Attributes:
         stencil_config: configuration for stencil compilation
         initialization_type: must be
-             "baroclinic", "restart", "serialbox", or "predefined"
+             "baroclinic", "restart", or "predefined"
         initialization_config: configuration for the chosen initialization
             type, see documentation for its corresponding configuration
             dataclass
@@ -61,18 +57,24 @@ class DriverConfig:
             including coupling code between the dycore and physics, as well as
             dry static adjustment. This is a development flag and will be removed
             in a later commit.
+        save_restart: whether to save the state output as restart files
     """
 
     stencil_config: pace.dsl.StencilConfig
-    initialization_type: str
-    initialization_config: InitializationConfig
+    initialization: InitializerSelector
     nx_tile: int
     nz: int
     layout: Tuple[int, int]
     dt_atmos: float
-    diagnostics_config: diagnostics.DiagnosticsConfig
-    performance_config: PerformanceConfig
-    comm_config: CommConfig
+    diagnostics_config: diagnostics.DiagnosticsConfig = dataclasses.field(
+        default_factory=diagnostics.DiagnosticsConfig
+    )
+    performance_config: PerformanceConfig = dataclasses.field(
+        default_factory=PerformanceConfig
+    )
+    comm_config: CreatesCommSelector = dataclasses.field(
+        default_factory=CreatesCommSelector
+    )
     dycore_config: fv3core.DynamicalCoreConfig = dataclasses.field(
         default_factory=fv3core.DynamicalCoreConfig
     )
@@ -85,6 +87,7 @@ class DriverConfig:
     seconds: int = 0
     dycore_only: bool = False
     disable_step_physics: bool = False
+    save_restart: bool = False
 
     @functools.cached_property
     def timestep(self) -> timedelta:
@@ -92,7 +95,7 @@ class DriverConfig:
 
     @property
     def start_time(self) -> Union[datetime, timedelta]:
-        return self.initialization_config.start_time
+        return self.initialization.start_time
 
     @functools.cached_property
     def total_time(self) -> timedelta:
@@ -110,27 +113,6 @@ class DriverConfig:
 
     @classmethod
     def from_dict(cls, kwargs: Dict[str, Any]) -> "DriverConfig":
-        initialization_type = kwargs["initialization_type"]
-        if initialization_type == "serialbox":
-            initialization_class = SerialboxConfig  # type: ignore
-        elif initialization_type == "predefined":
-            initialization_class = PredefinedStateConfig  # type: ignore
-        elif initialization_type == "baroclinic":
-            initialization_class = BaroclinicConfig  # type: ignore
-        elif initialization_type == "restart":
-            initialization_class = RestartConfig  # type: ignore
-        else:
-            raise ValueError(
-                "initialization_type must be one of 'baroclinic' or 'restart', "
-                f"got {initialization_type}"
-            )
-
-        kwargs["initialization_config"] = dacite.from_dict(
-            data_class=initialization_class,
-            data=kwargs.get("initialization_config", {}),
-            config=dacite.Config(strict=True),
-        )
-
         if isinstance(kwargs["dycore_config"], dict):
             for derived_name in ("dt_atmos", "layout", "npx", "npy", "npz", "ntiles"):
                 if derived_name in kwargs["dycore_config"]:
@@ -164,7 +146,12 @@ class DriverConfig:
         kwargs["physics_config"].npx = kwargs["nx_tile"] + 1
         kwargs["physics_config"].npy = kwargs["nx_tile"] + 1
         kwargs["physics_config"].npz = kwargs["nz"]
-        kwargs["comm_config"] = CommConfig.from_dict(kwargs.get("comm_config", {}))
+        kwargs["comm_config"] = CreatesCommSelector.from_dict(
+            kwargs.get("comm_config", {})
+        )
+        kwargs["initialization"] = InitializerSelector.from_dict(
+            kwargs["initialization"]
+        )
 
         return dacite.from_dict(
             data_class=cls, data=kwargs, config=dacite.Config(strict=True)
@@ -185,6 +172,7 @@ class Driver:
         """
         logger.info("initializing driver")
         self.config = config
+        self.time = self.config.start_time
         self.comm_config = config.comm_config
         self.comm = config.comm_config.get_comm()
         self.performance_config = self.config.performance_config
@@ -192,42 +180,42 @@ class Driver:
             communicator = pace.util.CubedSphereCommunicator.from_layout(
                 comm=self.comm, layout=self.config.layout
             )
-            quantity_factory, stencil_factory = _setup_factories(
+            self.quantity_factory, self.stencil_factory = _setup_factories(
                 config=config, communicator=communicator
             )
 
-            self.state = self.config.initialization_config.get_driver_state(
-                quantity_factory=quantity_factory, communicator=communicator
+            self.state = self.config.initialization.get_driver_state(
+                quantity_factory=self.quantity_factory, communicator=communicator
             )
-            self._start_time = self.config.initialization_config.start_time
+            self._start_time = self.config.initialization.start_time
             self.dycore = fv3core.DynamicalCore(
                 comm=communicator,
                 grid_data=self.state.grid_data,
-                stencil_factory=stencil_factory,
+                stencil_factory=self.stencil_factory,
                 damping_coefficients=self.state.damping_coefficients,
                 config=self.config.dycore_config,
                 phis=self.state.dycore_state.phis,
             )
 
             self.physics = fv3gfs.physics.Physics(
-                stencil_factory=stencil_factory,
+                stencil_factory=self.stencil_factory,
                 grid_data=self.state.grid_data,
                 namelist=self.config.physics_config,
                 active_packages=["microphysics"],
             )
             self.dycore_to_physics = update_atmos_state.DycoreToPhysics(
-                stencil_factory=stencil_factory,
+                stencil_factory=self.stencil_factory,
                 dycore_config=self.config.dycore_config,
                 do_dry_convective_adjustment=self.config.do_dry_convective_adjustment,
                 dycore_only=self.config.dycore_only,
             )
             self.end_of_step_update = update_atmos_state.UpdateAtmosphereState(
-                stencil_factory=stencil_factory,
+                stencil_factory=self.stencil_factory,
                 grid_data=self.state.grid_data,
                 namelist=self.config.physics_config,
                 comm=communicator,
                 grid_info=self.state.driver_grid_data,
-                quantity_factory=quantity_factory,
+                quantity_factory=self.quantity_factory,
                 dycore_only=self.config.dycore_only,
                 apply_tendencies=self.config.apply_tendencies,
             )
@@ -238,28 +226,25 @@ class Driver:
         log_subtile_location(
             partitioner=communicator.partitioner.tile, rank=communicator.rank
         )
+        self.diagnostics.store_grid(
+            grid_data=self.state.grid_data,
+            metadata=self.state.dycore_state.ps.metadata,
+        )
 
     def step_all(self):
         logger.info("integrating driver forward in time")
         with self.performance_config.total_timer.clock("total"):
-            time = self.config.start_time
             end_time = self.config.start_time + self.config.total_time
-            self.diagnostics.store_grid(
-                grid_data=self.state.grid_data,
-                metadata=self.state.dycore_state.ps.metadata,
-            )
-            while time < end_time:
-                self._step(timestep=self.config.timestep.total_seconds())
-                time += self.config.timestep
-                self.diagnostics.store(time=time, state=self.state)
-            self.performance_config.collect_performance()
+            while self.time < end_time:
+                self.step(timestep=self.config.timestep)
 
-    def _step(self, timestep: float):
+    def step(self, timestep: timedelta):
         with self.performance_config.timestep_timer.clock("mainloop"):
-            self._step_dynamics(timestep=timestep)
+            self._step_dynamics(timestep=timestep.total_seconds())
             if not self.config.disable_step_physics:
-                self._step_physics(timestep=timestep)
-
+                self._step_physics(timestep=timestep.total_seconds())
+        self.time += timestep
+        self.diagnostics.store(time=self.time, state=self.state)
         self.performance_config.collect_performance()
 
     def _step_dynamics(self, timestep: float):
@@ -295,8 +280,27 @@ class Driver:
             self.config.dt_atmos,
         )
 
+    def _write_restart_files(self):
+        self.state.save_state(comm=self.comm)
+        if self.comm.Get_rank() == 0:
+            config_dict = dataclasses.asdict(self.config)
+            config_dict["performance_config"].pop("times_per_step", None)
+            config_dict["performance_config"].pop("hits_per_step", None)
+            config_dict["performance_config"].pop("timestep_timer", None)
+            config_dict["performance_config"].pop("total_timer", None)
+            for field in ["dt_atmos", "layout", "npx", "npy", "npz", "ntiles"]:
+                config_dict["dycore_config"].pop(field, None)
+                config_dict["physics_config"].pop(field, None)
+            config_dict["initialization"]["type"] = "restart"
+            config_dict["initialization"]["config"]["start_time"] = self.time
+            config_dict["initialization"]["config"]["path"] = f"{os.getcwd()}/RESTART"
+            with open("RESTART/restart.yaml", "w") as file:
+                yaml.safe_dump(config_dict, file)
+
     def cleanup(self):
         logger.info("cleaning up driver")
+        if self.config.save_restart:
+            self._write_restart_files()
         self._write_performance_json_output()
         self.comm_config.cleanup(self.comm)
 

@@ -1,9 +1,7 @@
 import abc
 import dataclasses
-from datetime import datetime
-from typing import List, Optional
-
-import zarr.storage
+from datetime import datetime, timedelta
+from typing import List, Optional, Union
 
 import pace.driver
 import pace.dsl
@@ -15,9 +13,15 @@ from pace.util.quantity import QuantityMetadata
 from .state import DriverState
 
 
+try:
+    import zarr.storage as zarr_storage
+except ModuleNotFoundError:
+    zarr_storage = None
+
+
 class Diagnostics(abc.ABC):
     @abc.abstractmethod
-    def store(self, time: datetime, state: DriverState):
+    def store(self, time: Union[datetime, timedelta], state: DriverState):
         ...
 
     @abc.abstractmethod
@@ -74,13 +78,16 @@ class ZarrDiagnostics(Diagnostics):
         partitioner: pace.util.CubedSpherePartitioner,
         comm,
     ):
-        self.names = names
-        store = zarr.storage.DirectoryStore(path=path)
-        self.monitor = pace.util.ZarrMonitor(
-            store=store, partitioner=partitioner, mpi_comm=comm
-        )
+        if zarr_storage is None:
+            raise ModuleNotFoundError("zarr must be installed to use this class")
+        else:
+            self.names = names
+            store = zarr_storage.DirectoryStore(path=path)
+            self.monitor = pace.util.ZarrMonitor(
+                store=store, partitioner=partitioner, mpi_comm=comm
+            )
 
-    def store(self, time: datetime, state: DriverState):
+    def store(self, time: Union[datetime, timedelta], state: DriverState):
         if len(self.names) > 0:
             zarr_state = {"time": time}
             for name in self.names:
@@ -111,7 +118,7 @@ class ZarrDiagnostics(Diagnostics):
 class NullDiagnostics(Diagnostics):
     """Diagnostics that do nothing."""
 
-    def store(self, time: datetime, state: DriverState):
+    def store(self, time: Union[datetime, timedelta], state: DriverState):
         pass
 
     def store_grid(
