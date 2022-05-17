@@ -4,6 +4,7 @@ from typing import Any, Mapping
 import xarray as xr
 
 from pace import util
+import numpy as np
 
 
 @dataclass()
@@ -362,7 +363,7 @@ class DycoreState:
                     f"{dim_name}_{name}" for dim_name in field_info.metadata["dims"]
                 ]
                 data_vars[name] = xr.DataArray(
-                    getattr(self, name).data,
+                    np.asarray(getattr(self, name).data.get()),
                     dims=dims,
                     attrs={
                         "long_name": field_info.metadata["name"],

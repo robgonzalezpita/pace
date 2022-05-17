@@ -3,6 +3,7 @@ from typing import List, Optional
 
 import gt4py.gtscript as gtscript
 import xarray as xr
+import numpy as np
 
 import pace.util
 from fv3gfs.physics.stencils.microphysics import MicrophysicsState
@@ -225,7 +226,7 @@ class PhysicsState:
             if isinstance(field_info.type, gtscript._FieldDescriptor):
                 dims = [pace.util.X_DIM, pace.util.Y_DIM, pace.util.Z_DIM]
                 data_vars[name] = xr.DataArray(
-                    getattr(self, name).data,
+                    np.asarray(getattr(self, name).data),
                     dims=dims,
                     attrs={
                         "long_name": field_info.metadata["name"],

@@ -121,10 +121,12 @@ def _overwrite_state_from_restart(
     Returns:
         state: new state filled with restart files
     """
+    import cupy as cp
+
     df = xr.open_dataset(path + f"/{restart_file_prefix}_{rank}.nc")
     for _field in fields(type(state)):
         if "units" in _field.metadata.keys():
-            state.__dict__[_field.name].data[:] = df[_field.name].data[:]
+            state.__dict__[_field.name].data[:] = cp.asarray(df[_field.name].values)
     return state
 
 
@@ -148,10 +150,10 @@ def _restart_driver_state(
     physics_state = fv3gfs.physics.PhysicsState.init_zeros(
         quantity_factory=quantity_factory, active_packages=active_packages
     )
-    physics_state = _overwrite_state_from_restart(
-        path, rank, physics_state, "restart_physics_state"
-    )
-    physics_state.__post_init__(quantity_factory, active_packages)
+    # physics_state = _overwrite_state_from_restart(
+    #     path, rank, physics_state, "restart_physics_state"
+    # )
+    # physics_state.__post_init__(quantity_factory, active_packages)
     tendency_state = TendencyState.init_zeros(
         quantity_factory=quantity_factory,
     )

@@ -283,7 +283,8 @@ class FrozenStencil:
                     MPI.COMM_WORLD.Get_rank(), MPI.COMM_WORLD.Get_size()
                 )
             else:
-                write_decomposition()
+                if MPI.COMM_WORLD.Get_rank() == 0:
+                    write_decomposition()
 
         self.stencil_object: gt4py.StencilObject = stencil_function(
             definition=func, externals=externals, **stencil_kwargs,

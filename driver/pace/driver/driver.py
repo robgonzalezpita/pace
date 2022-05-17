@@ -23,7 +23,7 @@ from . import diagnostics
 from .comm import CreatesCommSelector
 from .initialization import InitializerSelector
 from .performance import PerformanceConfig
-
+from pace.util.global_config import set_partitioner
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +183,7 @@ class Driver:
             self.quantity_factory, self.stencil_factory = _setup_factories(
                 config=config, communicator=communicator
             )
-
+            set_partitioner(communicator.partitioner)
             self.state = self.config.initialization.get_driver_state(
                 quantity_factory=self.quantity_factory, communicator=communicator
             )
@@ -226,25 +226,31 @@ class Driver:
         log_subtile_location(
             partitioner=communicator.partitioner.tile, rank=communicator.rank
         )
-        self.diagnostics.store_grid(
-            grid_data=self.state.grid_data,
-            metadata=self.state.dycore_state.ps.metadata,
-        )
 
     def step_all(self):
         logger.info("integrating driver forward in time")
         with self.performance_config.total_timer.clock("total"):
             end_time = self.config.start_time + self.config.total_time
+            self.diagnostics.store_grid(
+            grid_data=self.state.grid_data,
+            metadata=self.state.dycore_state.ps.metadata,
+        )
+            idx = 0
+            freq = 48
             while self.time < end_time:
                 self.step(timestep=self.config.timestep)
+                self.time += self.config.timestep
+                idx += 1
+                if (idx % freq) == 0:
+                    self.diagnostics.store(time=self.time, state=self.state)
 
     def step(self, timestep: timedelta):
         with self.performance_config.timestep_timer.clock("mainloop"):
             self._step_dynamics(timestep=timestep.total_seconds())
             if not self.config.disable_step_physics:
                 self._step_physics(timestep=timestep.total_seconds())
-        self.time += timestep
-        self.diagnostics.store(time=self.time, state=self.state)
+        # self.time += timestep
+        # self.diagnostics.store(time=self.time, state=self.state)
         self.performance_config.collect_performance()
 
     def _step_dynamics(self, timestep: float):
