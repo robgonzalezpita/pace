@@ -57,7 +57,8 @@ class DriverConfig:
             including coupling code between the dycore and physics, as well as
             dry static adjustment. This is a development flag and will be removed
             in a later commit.
-        save_restart: whether to save the state output as restart files
+        save_restart: whether to save the state output as restart files at
+            cleanup time
     """
 
     stencil_config: pace.dsl.StencilConfig
@@ -232,9 +233,9 @@ class Driver:
         with self.performance_config.total_timer.clock("total"):
             end_time = self.config.start_time + self.config.total_time
             self.diagnostics.store_grid(
-            grid_data=self.state.grid_data,
-            metadata=self.state.dycore_state.ps.metadata,
-        )
+                grid_data=self.state.grid_data,
+                metadata=self.state.dycore_state.ps.metadata,
+            )
             idx = 0
             freq = 48
             while self.time < end_time:

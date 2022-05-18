@@ -13,6 +13,7 @@ import pace.dsl.gt4py_utils as utils
 import pace.stencils.corners as corners
 from fv3core.stencils.a2b_ord4 import AGrid2BGridFourthOrder
 from fv3core.stencils.d2a2c_vect import contravariant
+
 from pace.dsl.stencil import StencilFactory, get_stencils_with_varied_bounds
 from pace.dsl.typing import FloatField, FloatFieldIJ, FloatFieldK
 from pace.util import X_INTERFACE_DIM, Y_INTERFACE_DIM, Z_DIM, X_DIM, Y_DIM
@@ -496,10 +497,7 @@ class DivergenceDamping:
             vc (inout):
             uc (inout):
             delpc (out):
-            ke (inout): dt times the kinetic energy defined on cell corners,
-                at input time must be accurate for the input winds.
-                Gets updated to remain accurate for the output winds,
-                as described in section 8.3 of the FV3 documentation.
+            ke (inout): gets vort added to it
             wk (in): gets converted by a2b_ord4 and put into v_contra_dxc
             dt (in): timestep
         """
