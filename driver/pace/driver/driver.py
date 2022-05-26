@@ -24,7 +24,6 @@ from .comm import CreatesCommSelector
 from .initialization import InitializerSelector
 from .performance import PerformanceConfig
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -181,6 +180,7 @@ class Driver:
             communicator = pace.util.CubedSphereCommunicator.from_layout(
                 comm=self.comm, layout=self.config.layout
             )
+            self.communicator = communicator
             self.quantity_factory, self.stencil_factory = _setup_factories(
                 config=config, communicator=communicator
             )
@@ -256,6 +256,14 @@ class Driver:
             do_adiabatic_init=False,
             timestep=float(timestep),
             timer=self.performance_config.timestep_timer,
+        )
+        self.dycore = fv3core.DynamicalCore(
+            comm=self.communicator,
+            grid_data=self.state.grid_data,
+            stencil_factory=self.stencil_factory,
+            damping_coefficients=self.state.damping_coefficients,
+            config=self.config.dycore_config,
+            phis=self.state.dycore_state.phis,
         )
 
     def _step_physics(self, timestep: float):
