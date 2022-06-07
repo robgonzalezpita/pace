@@ -98,12 +98,12 @@ tests:
 	PYTEST_CMD="$(PYTEST_MAIN)" $(MAKE) test_base
 
 savepoint_tests:
-	$(MAKE) get_test_data
+#	$(MAKE) get_test_data
 	VOLUMES='$(VOLUMES) -v $(TEST_DATA_HOST):$(TEST_DATA_RUN_LOC)' \
 	PYTEST_CMD="$(PYTEST_SEQUENTIAL)" $(MAKE) test_base
 
 savepoint_tests_mpi:
-	$(MAKE) get_test_data
+#	$(MAKE) get_test_data
 	VOLUMES='$(VOLUMES) -v $(TEST_DATA_HOST):$(TEST_DATA_RUN_LOC)' \
 	PYTEST_CMD="$(PYTEST_PARALLEL)" $(MAKE) test_base
 

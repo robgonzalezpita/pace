@@ -10,8 +10,8 @@ cp -r $SCRIPT_DIR/../../pace-util $SCRIPT_DIR/../external/pace-util
 rm $SCRIPT_DIR/../external/stencils
 cp -r $SCRIPT_DIR/../../stencils $SCRIPT_DIR/../external/stencils
 
-rm $SCRIPT_DIR/../external/gt4py
-cp -r $SCRIPT_DIR/../../external/gt4py $SCRIPT_DIR/../external/gt4py
+#rm $SCRIPT_DIR/../external/gt4py
+#cp -r $SCRIPT_DIR/../../external/gt4py $SCRIPT_DIR/../external/gt4py
 
 rm $SCRIPT_DIR/../external/dsl
 cp -r $SCRIPT_DIR/../../dsl $SCRIPT_DIR/../external/dsl

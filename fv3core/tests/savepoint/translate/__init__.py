@@ -75,6 +75,7 @@ from .translate_moistcvpluspt_2d import TranslateMoistCVPlusPt_2d
 from .translate_neg_adj3 import TranslateNeg_Adj3
 from .translate_nh_p_grad import TranslateNH_P_Grad
 from .translate_pe_halo import TranslatePE_Halo
+from .translate_pln_halo import TranslatePLN_Halo
 from .translate_pk3_halo import TranslatePK3_Halo
 from .translate_pressureadjustedtemperature_nonhydrostatic import (
     TranslatePressureAdjustedTemperature_NonHydrostatic,
