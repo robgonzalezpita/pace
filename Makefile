@@ -51,9 +51,9 @@ savepoint_tests_mpi:
 dependencies.svg: dependencies.dot
 	dot -Tsvg $< -o $@
 
-constraints.txt: fv3core/requirements.txt pace-util/requirements.txt fv3gfs-physics/requirements.txt driver/requirements.txt requirements_docs.txt requirements_lint.txt external/gt4py/setup.cfg
+constraints.txt: dsl/requirements.txt fv3core/requirements.txt pace-util/requirements.txt fv3gfs-physics/requirements.txt driver/requirements.txt requirements_docs.txt requirements_lint.txt external/gt4py/setup.cfg
 	pip-compile $^ --output-file constraints.txt
-	sed -i.bak '/^git+https/d' constraints.txt
+	sed -i.bak '/\@ git+https/d' constraints.txt
 	rm -f constraints.txt.bak
 
 physics_savepoint_tests:
@@ -70,11 +70,17 @@ update_submodules_venv:
 test_driver:
 	DEV=$(DEV) $(MAKE) -C driver test
 
+driver_savepoint_tests_mpi:
+	DEV=$(DEV) $(MAKE) -C  fv3gfs-physics $@
+
 docs: ## generate Sphinx HTML documentation
 	$(MAKE) -C docs html
 	$(BROWSER) docs/_build/html/index.html
 
 servedocs: docs ## compile the docs watching for changes
 	watchmedo shell-command -p '*.rst' -c '$(MAKE) -C docs html' -R -D .
+
+lint:
+	pre-commit run --all-files
 
 .PHONY: docs servedocs

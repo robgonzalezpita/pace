@@ -47,6 +47,13 @@ def posdef_constraint_iv0(
     a4_3: FloatField,
     a4_4: FloatField,
 ):
+    """
+    Args:
+        a4_1 (inout): First cubic interpolation coefficient
+        a4_2 (inout): Second cubic interpolation coefficient
+        a4_3 (inout): Third cubic interpolation coefficient
+        a4_4 (inout): Fourth cubic interpolation coefficient
+    """
     if a4_1 <= 0.0:
         a4_2 = a4_1
         a4_3 = a4_1
@@ -76,6 +83,13 @@ def posdef_constraint_iv1(
     a4_3: FloatField,
     a4_4: FloatField,
 ):
+    """
+    Args:
+        a4_1 (inout): First cubic interpolation coefficient
+        a4_2 (inout): Second cubic interpolation coefficient
+        a4_3 (inout): Third cubic interpolation coefficient
+        a4_4 (inout): Fourth cubic interpolation coefficient
+    """
     da1 = a4_3 - a4_2
     da2 = da1 * da1
     a6da = a4_4 * da1
@@ -100,6 +114,14 @@ def remap_constraint(
     a4_4: FloatField,
     extm: BoolField,
 ):
+    """
+    Args:
+        a4_1 (inout): First cubic interpolation coefficient
+        a4_2 (inout): Second cubic interpolation coefficient
+        a4_3 (inout): Third cubic interpolation coefficient
+        a4_4 (inout): Fourth cubic interpolation coefficient
+        extm (in): If true sets a4_2 and a4_3 as a4_1 and a4_4 to 0
+    """
     da1 = a4_3 - a4_2
     da2 = da1 * da1
     a6da = a4_4 * da1
@@ -127,6 +149,18 @@ def set_initial_vals(
     q_bot: FloatField,
     qs: FloatFieldIJ,
 ):
+    """
+    Args:
+        gam (out):
+        q (out):
+        delp (in):
+        a4_1 (in):
+        a4_2 (out):
+        a4_3 (out):
+        a4_4 (out):
+        q_bot (out):
+        qs (in):
+    """
     from __externals__ import iv, kord
 
     with computation(FORWARD):
@@ -218,6 +252,20 @@ def apply_constraints(
     ext6: BoolField,
     extm: BoolField,
 ):
+    """
+    Args:
+        q (inout):
+        gam (out):
+        a4_1 (in):
+        a4_2 (out):
+        a4_3 (out):
+        a4_4 (out):
+        ext5 (out):
+        ext6 (out):
+        extm (out):
+    """
+    # TODO: q is not consumed in remap_profile after this stencil.
+    # Can we remove it or set it to be purely an input here?
     from __externals__ import iv, kord
 
     # apply constraints
@@ -281,7 +329,6 @@ def apply_constraints(
 
 
 def set_interpolation_coefficients(
-    q: FloatField,
     gam: FloatField,
     a4_1: FloatField,
     a4_2: FloatField,
@@ -292,6 +339,18 @@ def set_interpolation_coefficients(
     extm: BoolField,
     qmin: float,
 ):
+    """
+    Args:
+        gam (in):
+        a4_1 (inout):
+        a4_2 (inout):
+        a4_3 (inout):
+        a4_4 (inout):
+        ext5 (in):
+        ext6 (in):
+        extm (in):
+        qmin (in):
+    """
     from __externals__ import iv, kord
 
     # set_top_as_iv0
@@ -476,7 +535,7 @@ def set_interpolation_coefficients(
         if __INLINED(iv == 0):
             a4_1, a4_2, a4_3, a4_4 = posdef_constraint_iv0(a4_1, a4_2, a4_3, a4_4)
     # set_bottom_as_iv0, set_bottom_as_iv1
-    # TODO(rheag) temporary workaround to gtc:gt:gpu bug
+    # TODO(rheag) temporary workaround to gt:gpu bug
     # this computation can get out of order with the one that follows
     with computation(FORWARD), interval(-1, None):
         if __INLINED(iv == 0):
@@ -523,7 +582,6 @@ class RemapProfile:
         """
         assert kord <= 10, f"kord {kord} not implemented."
         grid_indexing = stencil_factory.grid_indexing
-        full_orig: Tuple[int] = grid_indexing.origin_full()
         km: int = grid_indexing.domain[2]
         self._kord = kord
 
@@ -542,8 +600,8 @@ class RemapProfile:
         self._ext5: BoolField = make_storage()
         self._ext6: BoolField = make_storage()
 
-        i_extent: int = i2 - i1 + 1
-        j_extent: int = j2 - j1 + 1
+        i_extent: int = int(i2 - i1 + 1)
+        j_extent: int = int(j2 - j1 + 1)
         origin: Tuple[int, int, int] = (i1, j1, 0)
         domain: Tuple[int, int, int] = (i_extent, j_extent, km)
         domain_extend: Tuple[int, int, int] = (i_extent, j_extent, km + 1)
@@ -584,13 +642,13 @@ class RemapProfile:
         distribution of the remapped field within each deformed grid cell.
         The constraints on the spline are set by kord and iv.
         Arguments:
-            qs: Bottom boundary condition
-            a4_1: The first interpolation coefficient
-            a4_2: The second interpolation coefficient
-            a4_3: The third interpolation coefficient
-            a4_4: The fourth interpolation coefficient
-            delp: The pressure difference between grid levels
-            qmin: The minimum value the field can take in a cell
+            qs (in): Bottom boundary condition
+            a4_1 (out): The first interpolation coefficient
+            a4_2 (out): The second interpolation coefficient
+            a4_3 (out): The third interpolation coefficient
+            a4_4 (out): The fourth interpolation coefficient
+            delp (in): The pressure difference between grid levels
+            qmin (in): The minimum value the field can take in a cell
         """
         self._set_initial_values(
             self._gam,
@@ -619,7 +677,6 @@ class RemapProfile:
             )
 
             self._set_interpolation_coefficients(
-                self._q,
                 self._gam,
                 a4_1,
                 a4_2,
@@ -630,5 +687,3 @@ class RemapProfile:
                 self._extm,
                 qmin,
             )
-
-        return a4_1, a4_2, a4_3, a4_4

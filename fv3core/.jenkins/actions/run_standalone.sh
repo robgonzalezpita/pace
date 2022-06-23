@@ -31,8 +31,8 @@ SAVE_ARTIFACTS="true"
 if [ "$1" == "profile" ] ; then
     DO_PROFILE="true"
 fi
-# Extra run in 'gtcuda' with nsys
-if [ "${DO_PROFILE}" == "true" ] && [ "${backend}" == "gtcuda" ] ; then
+# Extra run in 'cuda' with nsys
+if [ "${DO_PROFILE}" == "true" ] && [ "${backend}" == "cuda" ] ; then
     DO_NSYS_RUN="true"
 fi
 if [ "$1" == "build_cache" ] ; then
@@ -63,7 +63,7 @@ fi
 # Could parse from namelist, ranks = 6 * layout[0] * layout[1]
 RANKS=`echo ${experiment} | grep -o -E '[0-9]+ranks' | grep -o -E '[0-9]+'`
 BENCHMARK_DIR=${ROOT_DIR}/examples/standalone/benchmarks
-DATA_DIR="/project/s1053/fv3core_serialized_test_data/${DATA_VERSION}/${experiment}"
+DATA_DIR="/project/s1053/fv3core_serialized_test_data/${DATA_VERSION}/${experiment}/driver"
 ARTIFACT_ROOT="/project/s1053/performance/"
 TIMING_DIR="${ARTIFACT_ROOT}/fv3core_performance/${backend}"
 PROFILE_DIR="${ARTIFACT_ROOT}/fv3core_profile/${backend}"
@@ -82,13 +82,7 @@ if [ ! -d "${BENCHMARK_DIR}" ] ; then
     exitError 1005 ${LINENO} "Benchmark directory ${BENCHMARK_DIR} does not exist"
 fi
 
-# GTC backend name fix: passed as gtc_gt_* but their real name are gtc:gt:*
-#                       OR gtc_* but their real name is gtc:*
-if [[ $backend = gtc_gt_* ]] ; then
-    # sed explained: replace _ with :, two times
-    backend=`echo $backend | sed 's/_/:/;s/_/:/'`
-fi
-if [[ $backend = gtc_* ]] ; then
+if [[ $backend = gt_* ]] ; then
     # sed explained: replace _ with :
     backend=`echo $backend | sed 's/_/:/'`
 fi
@@ -112,10 +106,8 @@ echo "Perf. artifact directory:     ${TIMING_DIR}"
 echo "Profile artifact directory:   ${PROFILE_DIR}"
 
 
-# If the backend is a GTC backend we fetch the caches
-if [[ $backend != *numpy* ]];then
-    . ${ROOT_DIR}/.jenkins/actions/fetch_caches.sh $backend $experiment
-fi
+# NOTE: All backends are GTC backends, so fetch caches
+. ${ROOT_DIR}/../.jenkins/fetch_caches.sh $backend $experiment dycore
 
 # run standalone
 echo "=== Running standalone ========================="
@@ -133,7 +125,7 @@ if [ "${SAVE_TIMINGS}" == "true" ] && [ "${SAVE_ARTIFACTS}" == "true" ] ; then
         cp $ROOT_DIR/*.json ${TIMING_DIR}/
 fi
 
-# copying the cache is in a separate action (generache_cache.sh),
+# copying the cache is in a separate action (generate_caches.sh),
 # otherwise delete it
 if [ "${SAVE_CACHE}" != "true" ] ; then
     rm -rf .gt_cache*

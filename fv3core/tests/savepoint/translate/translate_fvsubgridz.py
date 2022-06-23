@@ -1,14 +1,16 @@
 from types import SimpleNamespace
 
 import fv3core.stencils.fv_subgridz as fv_subgridz
+import pace.dsl
 import pace.dsl.gt4py_utils as utils
+import pace.util
 import pace.util as fv3util
 from pace.stencils.testing import ParallelTranslateBaseSlicing
 
 
 # NOTE, does no halo updates, does not need to be a Parallel test,
 # but doing so here to make the interface match fv_dynamics.
-# Could add support to the TranslateFortranData2Py class
+# Could add support to the TranslateDycoreFortranData2Py class
 class TranslateFVSubgridZ(ParallelTranslateBaseSlicing):
     inputs = {
         "delp": {
@@ -121,9 +123,15 @@ class TranslateFVSubgridZ(ParallelTranslateBaseSlicing):
     for name in ("dt", "pe", "peln", "delp", "delz", "pkz"):
         outputs.pop(name)
 
-    def __init__(self, grids, namelist, stencil_factory, *args, **kwargs):
-        super().__init__(grids, namelist, stencil_factory, *args, **kwargs)
-        grid = grids[0]
+    def __init__(
+        self,
+        grid,
+        namelist: pace.util.Namelist,
+        stencil_factory: pace.dsl.StencilFactory,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(grid, namelist, stencil_factory, *args, **kwargs)
         self._base.in_vars["data_vars"] = {
             "pe": {
                 "istart": grid.is_ - 1,
@@ -181,7 +189,12 @@ class TranslateFVSubgridZ(ParallelTranslateBaseSlicing):
             self.namelist.hydrostatic,
         )
         state_namespace = SimpleNamespace(**state)
-        fvsubgridz(state_namespace, state_namespace.dt)
+        fvsubgridz(
+            state_namespace,
+            state_namespace.u_dt,
+            state_namespace.v_dt,
+            state_namespace.dt,
+        )
         return self.outputs_from_state(state)
 
     def compute_sequential(self, inputs_list, communicator_list):
@@ -195,5 +208,10 @@ class TranslateFVSubgridZ(ParallelTranslateBaseSlicing):
                 self.namelist.hydrostatic,
             )
             state_namespace = SimpleNamespace(**state)
-            fvsubgridz(state_namespace, state_namespace.dt)
+            fvsubgridz(
+                state_namespace,
+                state_namespace.u_dt,
+                state_namespace.v_dt,
+                state_namespace.dt,
+            )
         return self.outputs_list_from_state_list(state_list)

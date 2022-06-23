@@ -13,7 +13,6 @@ from pace.stencils.testing.translate_physics import TranslatePhysicsFortranData2
 class TranslateMicroph(TranslatePhysicsFortranData2Py):
     def __init__(self, grid, namelist, stencil_factory):
         super().__init__(grid, namelist, stencil_factory)
-
         self.in_vars["data_vars"] = {
             "qvapor": {"serialname": "mph_qv1", "microph": True},
             "qliquid": {"serialname": "mph_ql1", "microph": True},
@@ -42,7 +41,6 @@ class TranslateMicroph(TranslatePhysicsFortranData2Py):
             "udt": {"serialname": "mph_udt", "kend": namelist.npz - 1},
             "vdt": {"serialname": "mph_vdt", "kend": namelist.npz - 1},
         }
-        self.namelist = namelist
         self.stencil_factory = stencil_factory
         self.grid_indexing = self.stencil_factory.grid_indexing
 
@@ -51,7 +49,6 @@ class TranslateMicroph(TranslatePhysicsFortranData2Py):
         storage = utils.make_storage_from_shape(
             self.grid_indexing.domain_full(add=(1, 1, 1)),
             origin=self.grid_indexing.origin_compute(),
-            init=True,
             backend=self.stencil_factory.backend,
         )
         inputs["qo3mr"] = copy.deepcopy(storage)

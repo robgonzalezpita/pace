@@ -1,5 +1,4 @@
-import dataclasses
-from typing import Optional, Sequence
+from typing import Optional
 
 import gt4py.gtscript as gtscript
 from gt4py.gtscript import PARALLEL, computation, horizontal, interval, region
@@ -37,6 +36,14 @@ def q_i_stencil(
     q_advected_along_y: FloatField,
     q_i: FloatField,
 ):
+    """
+    Args:
+        q (in):
+        area (in):
+        y_area_flux (in):
+        q_advected_along_y (in):
+        q_i (out):
+    """
     with computation(PARALLEL), interval(...):
         fyy = y_area_flux * q_advected_along_y
         # note the units of area cancel out, because area is present in all
@@ -54,6 +61,14 @@ def q_j_stencil(
     fx2: FloatField,
     q_j: FloatField,
 ):
+    """
+    Args:
+        q (in):
+        area (in):
+        x_area_flux (in):
+        fx2 (in):
+        q_j (out):
+    """
     with computation(PARALLEL), interval(...):
         fx1 = x_area_flux * fx2
         area_with_x_flux = apply_x_flux_divergence(area, x_area_flux)
@@ -80,6 +95,16 @@ def final_fluxes(
 
     Combining the advection operators in this way is done to cancel leading-order
     numerical splitting error.
+
+    Args:
+        q_advected_y_x_advected_mean (in):
+        q_x_advected_mean (in):
+        q_advected_x_y_advected_mean (in):
+        q_y_advected_mean (in):
+        x_unit_flux (in):
+        y_unit_flux (in):
+        x_flux (out):
+        y_flux (out):
     """
     with computation(PARALLEL), interval(...):
         with horizontal(region[:, :-1]):
@@ -90,63 +115,6 @@ def final_fluxes(
             y_flux = (
                 0.5 * (q_advected_x_y_advected_mean + q_y_advected_mean) * y_unit_flux
             )
-
-
-@dataclasses.dataclass
-class CopiedCorners:
-    """
-    Data container for storages with corners copied for differencing
-    along the x- and y-directions.
-
-    Attributes:
-        base: writeable version of storage with no guarantees about corner data
-        x_differentiable: read-only version of storage which can be differenced
-            along the x-direction
-        y_differentiable: read-only version of storage which can be differenced
-            along the y-direction
-    """
-
-    base: FloatField
-    x_differentiable: FloatField
-    y_differentiable: FloatField
-
-
-class PreAllocatedCopiedCornersFactory:
-    """
-    Creates CopiedCorners from a field, using an init-compiled stencil
-    and pre-allocated output fields.
-    """
-
-    def __init__(
-        self,
-        stencil_factory: StencilFactory,
-        *,
-        dims: Sequence[str],
-        y_temporary: FloatField,
-    ):
-        """
-        Args:
-            stencil_factory: creates stencils
-            dims: dimensionality of data to be copied
-            y_temporary: if given, storage to use for y-differenceable field
-                (x-differenceable field uses same memory as base storage),
-                if None then a storage is initialized based on max shape
-        """
-        if y_temporary is None:
-            y_temporary = utils.make_storage_from_shape(
-                stencil_factory.grid_indexing.max_shape,
-                origin=stencil_factory.grid_indexing.origin_compute(),
-                backend=stencil_factory.backend,
-            )
-        self._copy_corners_xy = corners.CopyCornersXY(
-            stencil_factory, dims, y_field=y_temporary
-        )
-
-    def __call__(self, field: FloatFieldIJ) -> CopiedCorners:
-        x_field, y_field = self._copy_corners_xy(field)
-        return CopiedCorners(
-            base=field, x_differentiable=x_field, y_differentiable=y_field
-        )
 
 
 class FiniteVolumeTransport:
@@ -173,7 +141,10 @@ class FiniteVolumeTransport:
 
         def make_storage():
             return utils.make_storage_from_shape(
-                idx.max_shape, origin=origin, backend=stencil_factory.backend
+                idx.max_shape,
+                origin=origin,
+                backend=stencil_factory.backend,
+                is_temporary=False,
             )
 
         self._q_advected_y = make_storage()
@@ -182,30 +153,14 @@ class FiniteVolumeTransport:
         self._q_y_advected_mean = make_storage()
         self._q_advected_x_y_advected_mean = make_storage()
         self._q_advected_y_x_advected_mean = make_storage()
-        self._corner_tmp = utils.make_storage_from_shape(
-            idx.max_shape, origin=idx.origin_full(), backend=stencil_factory.backend
-        )
-        """Temporary field to use for corner computation in both x and y direction"""
         self._nord = nord
         self._damp_c = damp_c
         ord_outer = hord
         ord_inner = 8 if hord == 10 else hord
-        self.q_i_stencil = stencil_factory.from_origin_domain(
-            q_i_stencil,
-            origin=idx.origin_full(add=(0, 3, 0)),
-            domain=idx.domain_full(add=(0, -3, 1)),
-        )
-        self.q_j_stencil = stencil_factory.from_origin_domain(
-            q_j_stencil,
-            origin=idx.origin_full(add=(3, 0, 0)),
-            domain=idx.domain_full(add=(-3, 0, 1)),
-        )
-        self.stencil_transport_flux = stencil_factory.from_origin_domain(
-            final_fluxes,
-            origin=idx.origin_compute(),
-            domain=idx.domain_compute(add=(1, 1, 1)),
-        )
         if (self._nord is not None) and (self._damp_c is not None):
+            # [DaCe] Use _do_delnflux instead of a None function
+            # to have DaCe parsing working
+            self._do_delnflux = True
             self.delnflux: Optional[DelnFlux] = DelnFlux(
                 stencil_factory=stencil_factory,
                 damping_coefficients=damping_coefficients,
@@ -214,15 +169,12 @@ class FiniteVolumeTransport:
                 damp_c=self._damp_c,
             )
         else:
-            self.delnflux = None
+            # This triggers dace parsing error:
+            # self.delnflux = None
+            self._do_delnflux = False
 
-        self.x_piecewise_parabolic_inner = XPiecewiseParabolic(
-            stencil_factory=stencil_factory,
-            dxa=grid_data.dxa,
-            grid_type=grid_type,
-            iord=ord_inner,
-            origin=idx.origin_compute(add=(0, -idx.n_halo, 0)),
-            domain=idx.domain_compute(add=(1, 1 + 2 * idx.n_halo, 1)),
+        self._copy_corners_y: corners.CopyCorners = corners.CopyCorners(
+            "y", stencil_factory
         )
         self.y_piecewise_parabolic_inner = YPiecewiseParabolic(
             stencil_factory=stencil_factory,
@@ -232,6 +184,11 @@ class FiniteVolumeTransport:
             origin=idx.origin_compute(add=(-idx.n_halo, 0, 0)),
             domain=idx.domain_compute(add=(1 + 2 * idx.n_halo, 1, 1)),
         )
+        self.q_i_stencil = stencil_factory.from_origin_domain(
+            q_i_stencil,
+            origin=idx.origin_full(add=(0, 3, 0)),
+            domain=idx.domain_full(add=(0, -3, 1)),
+        )
         self.x_piecewise_parabolic_outer = XPiecewiseParabolic(
             stencil_factory=stencil_factory,
             dxa=grid_data.dxa,
@@ -239,6 +196,23 @@ class FiniteVolumeTransport:
             iord=ord_outer,
             origin=idx.origin_compute(),
             domain=idx.domain_compute(add=(1, 1, 1)),
+        )
+
+        self._copy_corners_x: corners.CopyCorners = corners.CopyCorners(
+            "x", stencil_factory
+        )
+        self.x_piecewise_parabolic_inner = XPiecewiseParabolic(
+            stencil_factory=stencil_factory,
+            dxa=grid_data.dxa,
+            grid_type=grid_type,
+            iord=ord_inner,
+            origin=idx.origin_compute(add=(0, -idx.n_halo, 0)),
+            domain=idx.domain_compute(add=(1, 1 + 2 * idx.n_halo, 1)),
+        )
+        self.q_j_stencil = stencil_factory.from_origin_domain(
+            q_j_stencil,
+            origin=idx.origin_full(add=(3, 0, 0)),
+            domain=idx.domain_full(add=(-3, 0, 1)),
         )
         self.y_piecewise_parabolic_outer = YPiecewiseParabolic(
             stencil_factory=stencil_factory,
@@ -248,10 +222,15 @@ class FiniteVolumeTransport:
             origin=idx.origin_compute(),
             domain=idx.domain_compute(add=(1, 1, 1)),
         )
+        self.stencil_transport_flux = stencil_factory.from_origin_domain(
+            final_fluxes,
+            origin=idx.origin_compute(),
+            domain=idx.domain_compute(add=(1, 1, 1)),
+        )
 
     def __call__(
         self,
-        q: CopiedCorners,
+        q,
         crx,
         cry,
         x_area_flux,
@@ -277,33 +256,34 @@ class FiniteVolumeTransport:
         by contrast are area weighted.
 
         Args:
-            q: scalar to be transported (in)
-            crx: Courant number in x-direction
-            cry: Courant number in y-direction
-            x_area_flux: flux of area in x-direction, in units of m^2 (in)
-            y_area_flux: flux of area in y-direction, in units of m^2 (in)
-            q_x_flux: transport flux of q in x-direction in units q * m^2,
-                corresponding to X in eq 4.17 of FV3 documentation (out)
-            q_y_flux: transport flux of q in y-direction in units q * m^2,
-                corresponding to Y in eq 4.17 of FV3 documentation (out)
-            x_mass_flux: mass flux in x-direction,
+            q (in): scalar to be transported
+            crx (in): Courant number in x-direction
+            cry (in): Courant number in y-direction
+            x_area_flux (in): flux of area in x-direction, in units of m^2
+            y_area_flux (in): flux of area in y-direction, in units of m^2
+            q_x_flux (out): transport flux of q in x-direction in units q * m^2,
+                corresponding to X in eq 4.17 of FV3 documentation
+            q_y_flux (out): transport flux of q in y-direction in units q * m^2,
+                corresponding to Y in eq 4.17 of FV3 documentation
+            x_mass_flux (in): mass flux in x-direction,
                 corresponds to F(rho^* = 1) in PL07 eq 17, if not given
                 then q is assumed to have per-area units
-            y_mass_flux: mass flux in x-direction,
+            y_mass_flux (in): mass flux in x-direction,
                 corresponds to G(rho^* = 1) in PL07 eq 18, if not given
                 then q is assumed to have per-area units
-            mass: ??? passed along to damping code, if scalar is per-mass
+            mass (in): ??? passed along to damping code, if scalar is per-mass
                 (as opposed to per-area) then this must be provided for
                 damping to be correct
         """
-        if (
-            self.delnflux is not None
-            and mass is None
-            and (x_mass_flux is not None or y_mass_flux is not None)
-        ):
-            raise ValueError(
-                "when damping is enabled, mass must be given if mass flux is given"
-            )
+        # [DaCe] dace.frontend.python.common.DaceSyntaxError: Keyword "Raise" disallowed
+        # if (
+        #     self.delnflux is not None
+        #     and mass is None
+        #     and (x_mass_flux is not None or y_mass_flux is not None)
+        # ):
+        #     raise ValueError(
+        #         "when damping is enabled, mass must be given if mass flux is given"
+        #     )
         if x_mass_flux is None:
             x_unit_flux = x_area_flux
         else:
@@ -317,15 +297,13 @@ class FiniteVolumeTransport:
         # y_area_flux as an input (flux = area_flux * advected_mean), since a flux is
         # easier to understand than the current output. This would be like merging
         # yppm with q_i_stencil and xppm with q_j_stencil.
-
-        self.y_piecewise_parabolic_inner(
-            q.y_differentiable, cry, self._q_y_advected_mean
-        )
+        self._copy_corners_y(q)
+        self.y_piecewise_parabolic_inner(q, cry, self._q_y_advected_mean)
         # q_y_advected_mean is 1/Delta_area * curly-F, where curly-F is defined in
         # equation 4.3 of the FV3 documentation and Delta_area is the advected area
         # (y_area_flux)
         self.q_i_stencil(
-            q.y_differentiable,
+            q,
             self._area,
             y_area_flux,
             self._q_y_advected_mean,
@@ -336,12 +314,11 @@ class FiniteVolumeTransport:
         )
         # q_advected_y_x_advected_mean is now rho^n + F(rho^y) in PL07 eq 16
 
+        self._copy_corners_x(q)
         # similarly below for x<->y
-        self.x_piecewise_parabolic_inner(
-            q.x_differentiable, crx, self._q_x_advected_mean
-        )
+        self.x_piecewise_parabolic_inner(q, crx, self._q_x_advected_mean)
         self.q_j_stencil(
-            q.x_differentiable,
+            q,
             self._area,
             x_area_flux,
             self._q_x_advected_mean,
@@ -361,5 +338,5 @@ class FiniteVolumeTransport:
             q_x_flux,
             q_y_flux,
         )
-        if self.delnflux is not None:
-            self.delnflux(q.base, q_x_flux, q_y_flux, mass=mass)
+        if self._do_delnflux:
+            self.delnflux(q, q_x_flux, q_y_flux, mass=mass)

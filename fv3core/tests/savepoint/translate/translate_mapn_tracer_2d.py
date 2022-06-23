@@ -1,9 +1,20 @@
 import fv3core.stencils.mapn_tracer as MapN_Tracer
-from pace.stencils.testing import TranslateFortranData2Py, TranslateGrid, pad_field_in_j
+import pace.dsl
+import pace.util
+from pace.stencils.testing import (
+    TranslateDycoreFortranData2Py,
+    TranslateGrid,
+    pad_field_in_j,
+)
 
 
-class TranslateMapN_Tracer_2d(TranslateFortranData2Py):
-    def __init__(self, grid, namelist, stencil_factory):
+class TranslateMapN_Tracer_2d(TranslateDycoreFortranData2Py):
+    def __init__(
+        self,
+        grid,
+        namelist: pace.util.Namelist,
+        stencil_factory: pace.dsl.StencilFactory,
+    ):
         super().__init__(grid, namelist, stencil_factory)
         self.in_vars["data_vars"] = {
             "pe1": {"istart": grid.is_, "iend": grid.ie - 2, "axis": 1},
@@ -32,6 +43,7 @@ class TranslateMapN_Tracer_2d(TranslateFortranData2Py):
         inputs["j1"] = inputs["j_2d"]
         inputs["j2"] = inputs["j_2d"]
         del inputs["j_2d"]
+        del inputs["q_min"]
         inputs["pe1"] = self.make_storage_data(
             pad_field_in_j(
                 inputs["pe1"], self.grid.njd, backend=self.stencil_factory.backend
@@ -57,6 +69,7 @@ class TranslateMapN_Tracer_2d(TranslateFortranData2Py):
             inputs.pop("j1"),
             inputs.pop("j2"),
             fill=self.namelist.fill,
+            tracers=inputs["tracers"],
         )
         self.compute_func(**inputs)
         return self.slice_output(inputs)

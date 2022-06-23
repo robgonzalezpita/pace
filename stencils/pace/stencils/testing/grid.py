@@ -9,6 +9,7 @@ from pace.util.grid import (
     AngleGridData,
     ContravariantGridData,
     DampingCoefficients,
+    DriverGridData,
     GridData,
     HorizontalGridData,
     MetricTerms,
@@ -28,6 +29,48 @@ class Grid:
     # grid.ie == npx - 1identified east edge in fortran
     # But we need to add the halo - 1 to change this check to 0 based python arrays
     # grid.ie == npx + halo - 2
+
+    @classmethod
+    def _make(cls, npx, npy, npz, layout, rank, backend):
+        shape_params = {
+            "npx": npx,
+            "npy": npy,
+            "npz": npz,
+        }
+        # TODO this won't work with variable sized domains
+        # but this entire method will be refactored away
+        # and not used soon
+        nx = int((npx - 1) / layout[0])
+        ny = int((npy - 1) / layout[1])
+        indices = {
+            "isd": 0,
+            "ied": nx + 2 * utils.halo - 1,
+            "is_": utils.halo,
+            "ie": nx + utils.halo - 1,
+            "jsd": 0,
+            "jed": ny + 2 * utils.halo - 1,
+            "js": utils.halo,
+            "je": ny + utils.halo - 1,
+        }
+        return cls(indices, shape_params, rank, layout, backend, local_indices=True)
+
+    @classmethod
+    def from_namelist(cls, namelist, rank, backend):
+        return cls._make(
+            namelist.npx, namelist.npy, namelist.npz, namelist.layout, rank, backend
+        )
+
+    @classmethod
+    def with_data_from_namelist(cls, namelist, communicator, backend):
+        grid = cls.from_namelist(namelist, communicator.rank, backend)
+        grid.make_grid_data(
+            npx=namelist.npx,
+            npy=namelist.npy,
+            npz=namelist.npz,
+            communicator=communicator,
+            backend=backend,
+        )
+        return grid
 
     def __init__(
         self,
@@ -52,8 +95,8 @@ class Grid:
             local_i, local_j = int(indices[ivar]), int(indices[jvar])
             if not local_indices:
                 local_i, local_j = self.global_to_local_indices(local_i, local_j)
-            setattr(self, ivar, local_i)
-            setattr(self, jvar, local_j)
+            setattr(self, ivar, int(local_i))
+            setattr(self, jvar, int(local_j))
         self.nid = int(self.ied - self.isd + 1)
         self.njd = int(self.jed - self.jsd + 1)
         self.nic = int(self.ie - self.is_ + 1)
@@ -83,6 +126,7 @@ class Grid:
         self._sizer = None
         self._quantity_factory = None
         self._grid_data = None
+        self._driver_grid_data = None
         self._damping_coefficients = None
 
     @property
@@ -144,7 +188,7 @@ class Grid:
         self,
         data,
         dims=[pace.util.X_DIM, pace.util.Y_DIM, pace.util.Z_DIM],
-        units="Unknown",
+        units="unknown",
     ):
         origin = self.sizer.get_origin(dims)
         extent = self.sizer.get_extent(dims)
@@ -153,7 +197,7 @@ class Grid:
         )
 
     def global_to_local_1d(self, global_value, subtile_index, subtile_length):
-        return global_value - subtile_index * subtile_length
+        return int(global_value - subtile_index * subtile_length)
 
     def global_to_local_x(self, i_global):
         return self.global_to_local_1d(
@@ -171,7 +215,7 @@ class Grid:
         return i_local, j_local
 
     def local_to_global_1d(self, local_value, subtile_index, subtile_length):
-        return local_value + subtile_index * subtile_length
+        return int(local_value + subtile_index * subtile_length)
 
     def local_to_global_indices(self, i_local, j_local):
         i_global = self.local_to_global_1d(
@@ -232,7 +276,9 @@ class Grid:
         iters: str = "ijk" if ndim > 1 else "k"
         return tuple(
             [
-                slice(d[f"{iters[i]}start"], self.add_one(d[f"{iters[i]}end"]))
+                slice(
+                    int(d[f"{iters[i]}start"]), int(self.add_one(d[f"{iters[i]}end"]))
+                )
                 for i in range(ndim)
             ]
         )
@@ -406,7 +452,7 @@ class Grid:
     @property
     def grid_indexing(self) -> "GridIndexing":
         return GridIndexing(
-            domain=self.domain_shape_compute(),
+            domain=tuple(int(item) for item in self.domain_shape_compute()),
             n_halo=self.halo,
             south_edge=self.south_edge,
             north_edge=self.north_edge,
@@ -465,7 +511,7 @@ class Grid:
             edge_s=self.edge_s,
             edge_n=self.edge_n,
         )
-        vertical = VerticalGridData(ptop=-1.0e7, ks=-1)
+        vertical = VerticalGridData(ptop=self.ptop, ak=self.ak, bk=self.bk, ks=self.ks)
         contravariant = ContravariantGridData(
             self.cosa,
             self.cosa_u,
@@ -495,6 +541,21 @@ class Grid:
             angle_data=angle,
         )
         return self._grid_data
+
+    @property
+    def driver_grid_data(self) -> "GridData":
+        if self._driver_grid_data is None:
+            self._driver_grid_data = DriverGridData.new_from_grid_variables(
+                vlon=self.vlon,
+                vlat=self.vlat,
+                edge_vect_w=self.edge_vect_w,
+                edge_vect_e=self.edge_vect_e,
+                edge_vect_s=self.edge_vect_s,
+                edge_vect_n=self.edge_vect_n,
+                es1=self.es1,
+                ew2=self.ew2,
+            )
+        return self._driver_grid_data
 
     def set_grid_data(self, grid_data: "GridData"):
         self._grid_data = grid_data

@@ -1,16 +1,16 @@
 import math
+from typing import Dict
 
 import gt4py.gtscript as gtscript
 from gt4py.gtscript import PARALLEL, computation, horizontal, interval, region
 
 import pace.dsl.gt4py_utils as utils
 import pace.util
-from fv3core.stencils.fvtp2d import (
-    FiniteVolumeTransport,
-    PreAllocatedCopiedCornersFactory,
-)
+from fv3core.stencils.dyn_core import AcousticDynamics
+from fv3core.stencils.fvtp2d import FiniteVolumeTransport
 from pace.dsl.stencil import StencilFactory
 from pace.dsl.typing import FloatField, FloatFieldIJ
+from pace.util import Quantity
 
 
 @gtscript.function
@@ -49,6 +49,21 @@ def flux_compute(
     xfx: FloatField,
     yfx: FloatField,
 ):
+    """
+    Args:
+        cx (in):
+        cy (in):
+        dxa (in):
+        dya (in):
+        dx (in):
+        dy (in):
+        sin_sg1 (in):
+        sin_sg2 (in):
+        sin_sg3 (in):
+        sin_sg4 (in):
+        xfx (out):
+        yfx (out):
+    """
     with computation(PARALLEL), interval(...):
         xfx = flux_x(cx, dxa, dy, sin_sg3, sin_sg1, xfx)
         yfx = flux_y(cy, dya, dx, sin_sg4, sin_sg2, yfx)
@@ -63,7 +78,17 @@ def cmax_multiply_by_frac(
     mfyd: FloatField,
     n_split: int,
 ):
-    """multiply all other inputs in-place by frac."""
+    """
+    Multiply all inputs in-place by 1.0 / n_split.
+
+    Args:
+        cxd (inout):
+        xfx (inout):
+        mfxd (inout):
+        cyd (inout):
+        yfx (inout):
+        mfyd (inout):
+    """
     with computation(PARALLEL), interval(...):
         frac = 1.0 / n_split
         cxd = cxd * frac
@@ -93,6 +118,14 @@ def dp_fluxadjustment(
     rarea: FloatFieldIJ,
     dp2: FloatField,
 ):
+    """
+    Args:
+        dp1 (in):
+        mfx (in):
+        mfy (in):
+        rarea (in):
+        dp2 (out):
+    """
     with computation(PARALLEL), interval(...):
         dp2 = dp1 + (mfx - mfx[1, 0, 0] + mfy - mfy[0, 1, 0]) * rarea
 
@@ -110,8 +143,29 @@ def q_adjust(
     rarea: FloatFieldIJ,
     dp2: FloatField,
 ):
+    """
+    Args:
+        q (inout):
+        dp1 (in):
+        fx (in):
+        fy (in):
+        rarea (in):
+        dp2 (in):
+    """
     with computation(PARALLEL), interval(...):
         q = adjustment(q, dp1, fx, fy, rarea, dp2)
+
+
+# Simple stencil replacing:
+#   self._tmp_dp2[:] = dp1
+#   dp1[:] = dp2
+#   dp2[:] = self._tmp_dp2
+# Because dpX can be a quantity or an array
+def swap_dp(dp1: FloatField, dp2: FloatField):
+    with computation(PARALLEL), interval(...):
+        tmp = dp1
+        dp1 = dp2
+        dp2 = tmp
 
 
 class TracerAdvection:
@@ -127,11 +181,11 @@ class TracerAdvection:
         transport: FiniteVolumeTransport,
         grid_data,
         comm: pace.util.CubedSphereCommunicator,
-        tracer_count,
+        tracers: Dict[str, Quantity],
     ):
         grid_indexing = stencil_factory.grid_indexing
         self.grid_indexing = grid_indexing  # needed for selective validation
-        self._tracer_count = tracer_count
+        self._tracer_count = len(tracers)
         self.comm = comm
         self.grid_data = grid_data
         shape = grid_indexing.domain_full(add=(1, 1, 1))
@@ -147,6 +201,7 @@ class TracerAdvection:
         self._tmp_fx = make_storage()
         self._tmp_fy = make_storage()
         self._tmp_dp = make_storage()
+        self._tmp_dp2 = make_storage()
         dims = [pace.util.X_DIM, pace.util.Y_DIM, pace.util.Z_DIM]
         origin, extent = grid_indexing.get_origin_domain(dims)
         self._tmp_qn2 = pace.util.Quantity(
@@ -164,6 +219,13 @@ class TracerAdvection:
         for axis_offset_name, axis_offset_value in ax_offsets.items():
             if "local" in axis_offset_name:
                 local_axis_offsets[axis_offset_name] = axis_offset_value
+
+        self._swap_dp = stencil_factory.from_origin_domain(
+            swap_dp,
+            origin=grid_indexing.origin_compute(),
+            domain=grid_indexing.domain_compute(),
+            externals=local_axis_offsets,
+        )
 
         self._flux_compute = stencil_factory.from_origin_domain(
             flux_compute,
@@ -203,21 +265,29 @@ class TracerAdvection:
             n_halo=utils.halo,
             backend=stencil_factory.backend,
         )
-        self._tracers_halo_updater = self.comm.get_scalar_halo_updater(
-            [tracer_halo_spec] * tracer_count
-        )
-        self._copy_corners = PreAllocatedCopiedCornersFactory(
-            stencil_factory=stencil_factory,
-            dims=[pace.util.X_DIM, pace.util.Y_DIM, pace.util.Z_DIM],
-            y_temporary=None,
+        self._tracers_halo_updater = AcousticDynamics._WrappedHaloUpdater(
+            comm.get_scalar_halo_updater([tracer_halo_spec] * self._tracer_count),
+            tracers,
+            [t for t in tracers.keys()],
         )
 
-    def __call__(self, tracers, dp1, mfxd, mfyd, cxd, cyd, mdt):
-        if len(tracers) != self._tracer_count:
-            raise ValueError(
-                f"incorrect number of tracers, {self._tracer_count} was "
-                f"specified on init but {len(tracers)} were passed"
-            )
+    def __call__(self, tracers: Dict[str, Quantity], dp1, mfxd, mfyd, cxd, cyd, mdt):
+        """
+        Args:
+            tracers (inout):
+            dp1 (in):
+            mfxd (inout):
+            mfyd (inout):
+            cxd (inout):
+            cyd (inout):
+        """
+        # TODO: remove unused mdt argument
+        # DaCe parsing issue
+        # if len(tracers) != self._tracer_count:
+        #     raise ValueError(
+        #         f"incorrect number of tracers, {self._tracer_count} was "
+        #         f"specified on init but {len(tracers)} were passed"
+        #     )
         # start HALO update on q (in dyn_core in fortran -- just has started when
         # this function is called...)
         self._flux_compute(
@@ -277,11 +347,11 @@ class TracerAdvection:
                 n_split,
             )
 
-        self._tracers_halo_updater.update(tracers.values())
+        self._tracers_halo_updater.update()
 
         dp2 = self._tmp_dp
 
-        for it in range(int(n_split)):
+        for it in range(n_split):
             last_call = it == n_split - 1
             self._dp_fluxadjustment(
                 dp1,
@@ -292,7 +362,7 @@ class TracerAdvection:
             )
             for q in tracers.values():
                 self.finite_volume_transport(
-                    self._copy_corners(q.storage),
+                    q,
                     cxd,
                     cyd,
                     self._tmp_xfx,
@@ -303,7 +373,7 @@ class TracerAdvection:
                     y_mass_flux=mfyd,
                 )
                 self._q_adjust(
-                    q.storage,
+                    q,
                     dp1,
                     self._tmp_fx,
                     self._tmp_fy,
@@ -311,6 +381,6 @@ class TracerAdvection:
                     dp2,
                 )
             if not last_call:
-                self._tracers_halo_updater.update(tracers.values())
+                self._tracers_halo_updater.update()
                 # use variable assignment to avoid a data copy
-                dp1, dp2 = dp2, dp1
+                self._swap_dp(dp1, dp2)

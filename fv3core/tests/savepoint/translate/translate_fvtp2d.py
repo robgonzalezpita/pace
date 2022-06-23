@@ -1,14 +1,17 @@
+import pace.dsl
 import pace.dsl.gt4py_utils as utils
-from fv3core.stencils.fvtp2d import (
-    FiniteVolumeTransport,
-    PreAllocatedCopiedCornersFactory,
-)
-from pace.stencils.testing import TranslateFortranData2Py
-from pace.util import X_DIM, Y_DIM, Z_DIM
+import pace.util
+from fv3core.stencils.fvtp2d import FiniteVolumeTransport
+from pace.stencils.testing import TranslateDycoreFortranData2Py
 
 
-class TranslateFvTp2d(TranslateFortranData2Py):
-    def __init__(self, grid, namelist, stencil_factory):
+class TranslateFvTp2d(TranslateDycoreFortranData2Py):
+    def __init__(
+        self,
+        grid,
+        namelist: pace.util.Namelist,
+        stencil_factory: pace.dsl.StencilFactory,
+    ):
         super().__init__(grid, namelist, stencil_factory)
         self.in_vars["data_vars"] = {
             "q": {},
@@ -60,18 +63,17 @@ class TranslateFvTp2d(TranslateFortranData2Py):
             damp_c=inputs.pop("damp_c"),
         )
         del inputs["hord"]
-        q_storage = inputs["q"]
-        factory = PreAllocatedCopiedCornersFactory(
-            self.stencil_factory, dims=[X_DIM, Y_DIM, Z_DIM], y_temporary=None
-        )
-        inputs["q"] = factory(q_storage)
         self.compute_func(**inputs)
-        inputs["q"] = q_storage
         return inputs
 
 
 class TranslateFvTp2d_2(TranslateFvTp2d):
-    def __init__(self, grid, namelist, stencil_factory):
+    def __init__(
+        self,
+        grid,
+        namelist: pace.util.Namelist,
+        stencil_factory: pace.dsl.StencilFactory,
+    ):
         super().__init__(grid, namelist, stencil_factory)
         del self.in_vars["data_vars"]["mass"]
         del self.in_vars["data_vars"]["x_mass_flux"]

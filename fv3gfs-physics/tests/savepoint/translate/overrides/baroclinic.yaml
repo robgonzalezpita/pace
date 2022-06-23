@@ -1,53 +1,20 @@
-C_SW:
-  - backend: numpy
-    max_error: 5e-2
-
-FVDynamics:
-  - backend: numpy
-    ignore_near_zero_errors:
+Driver:
+  - ignore_near_zero_errors:
       uc: 1e-13
       vc: 1e-13
       mfxd: 1e-3
       mfyd: 1e-3
       cxd: 1e-3
       cyd: 1e-3
-
-DynCore:
-  - backend: numpy
-    ignore_near_zero_errors:
-      uc: 1e-13
-      vc: 1e-13
-      mfxd: 1e-3
-      mfyd: 1e-3
-      cxd: 1e-3
-      cyd: 1e-3
-
-D_SW:
-  - backend: numpy
-    ignore_near_zero_errors:
-      divgdd: 1e-20
-      ucd: 1e-20
-      vcd: 1e-20
-      delpcd: 1e-15
-
-DivergenceDamping:
-  - backend: numpy
-    ignore_near_zero_errors:
-      vort: 6e-8
-      delpc: 1e-15
 
 GFSPhysicsDriver:
   - backend: numpy
     max_error: 1e-10
-  - backend: gtx86
+  - backend: gt:cpu_ifirst
     max_error: 1e-10
-  - backend: gtc:gt:cpu_ifirst
-    max_error: 1e-10
-  - backend: gtc:cuda
+  - backend: cuda
     cuda_no_fma: true
-  - backend: gtc:gt:gpu
-    cuda_no_fma: true
-  - backend: gtcuda
+  - backend: gt:gpu
     cuda_no_fma: true
 
 # On GPU u/v wind tendencies seems to diverge in computation from numpy/fortran
@@ -56,18 +23,14 @@ GFSPhysicsDriver:
 Microph:
   - backend: numpy
     max_error: 1e-10
-  - backend: gtx86
+  - backend: gt:cpu_ifirst
     max_error: 1e-12
-  - backend: gtc:gt:cpu_ifirst
-    max_error: 1e-12
-  - backend: gtc:cuda
+  - backend: cuda
     cuda_no_fma: true
-  - backend: gtcuda
+  - backend: gt:gpu
+    max_error: 2.2e-8
     cuda_no_fma: true
-  - backend: gtc:gt:gpu
-    cuda_no_fma: true
-
-FillGFS:
-  - backend: gtx86
     ignore_near_zero_errors:
-      IPD_qvapor: 9.9e-8
+      mph_ql_dt: 1e-8
+      mph_qr_dt: 1e-9
+      mph_qg_dt: 1e-18

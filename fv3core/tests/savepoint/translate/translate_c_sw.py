@@ -1,8 +1,12 @@
+import pace.dsl
+import pace.util
 from fv3core.stencils.c_sw import CGridShallowWaterDynamics
-from pace.stencils.testing import TranslateFortranData2Py
+from pace.stencils.testing import TranslateDycoreFortranData2Py
 
 
-def get_c_sw_instance(grid, namelist, stencil_factory):
+def get_c_sw_instance(
+    grid, namelist: pace.util.Namelist, stencil_factory: pace.dsl.StencilFactory
+):
     return CGridShallowWaterDynamics(
         stencil_factory,
         grid.grid_data,
@@ -12,8 +16,60 @@ def get_c_sw_instance(grid, namelist, stencil_factory):
     )
 
 
-class TranslateC_SW(TranslateFortranData2Py):
-    def __init__(self, grid, namelist, stencil_factory):
+def compute_vorticitytransport_cgrid(
+    c_sw: CGridShallowWaterDynamics,
+    uc,
+    vc,
+    vort_c,
+    ke_c,
+    v,
+    u,
+    dt2: float,
+):
+    """Update the C-Grid x and y velocity fields.
+
+    Args:
+        uc: x-velocity on C-grid (input, output)
+        vc: y-velocity on C-grid (input, output)
+        vort_c: Vorticity on C-grid (input)
+        ke_c: kinetic energy on C-grid (input)
+        v: y-velocity on D-grid (input)
+        u: x-velocity on D-grid (input)
+        dt2: timestep (input)
+    """
+    # TODO: this function is kept because it has a translate test,
+    # if the structure of call changes significantly from this
+    # consider deleting this function and the translate test
+    # or restructuring the savepoint
+    c_sw._update_y_velocity(
+        vort_c,
+        ke_c,
+        u,
+        vc,
+        c_sw.grid_data.cosa_v,
+        c_sw.grid_data.sina_v,
+        c_sw.grid_data.rdyc,
+        dt2,
+    )
+    c_sw._update_x_velocity(
+        vort_c,
+        ke_c,
+        v,
+        uc,
+        c_sw.grid_data.cosa_u,
+        c_sw.grid_data.sina_u,
+        c_sw.grid_data.rdxc,
+        dt2,
+    )
+
+
+class TranslateC_SW(TranslateDycoreFortranData2Py):
+    def __init__(
+        self,
+        grid,
+        namelist: pace.util.Namelist,
+        stencil_factory: pace.dsl.StencilFactory,
+    ):
         super().__init__(grid, namelist, stencil_factory)
         cgrid_shallow_water_lagrangian_dynamics = get_c_sw_instance(
             grid, namelist, stencil_factory
@@ -53,8 +109,13 @@ class TranslateC_SW(TranslateFortranData2Py):
         return self.slice_output(inputs, {"delpcd": delpc, "ptcd": ptc})
 
 
-class TranslateDivergenceCorner(TranslateFortranData2Py):
-    def __init__(self, grid, namelist, stencil_factory):
+class TranslateDivergenceCorner(TranslateDycoreFortranData2Py):
+    def __init__(
+        self,
+        grid,
+        namelist: pace.util.Namelist,
+        stencil_factory: pace.dsl.StencilFactory,
+    ):
         super().__init__(grid, namelist, stencil_factory)
         self.max_error = 9e-10
         self.cgrid_sw_lagrangian_dynamics = get_c_sw_instance(
@@ -106,8 +167,13 @@ class TranslateDivergenceCorner(TranslateFortranData2Py):
         return self.slice_output({"divg_d": inputs["divg_d"]})
 
 
-class TranslateCirculation_Cgrid(TranslateFortranData2Py):
-    def __init__(self, grid, namelist, stencil_factory):
+class TranslateCirculation_Cgrid(TranslateDycoreFortranData2Py):
+    def __init__(
+        self,
+        grid,
+        namelist: pace.util.Namelist,
+        stencil_factory: pace.dsl.StencilFactory,
+    ):
         super().__init__(grid, namelist, stencil_factory)
         self.max_error = 5e-9
         self.cgrid_sw_lagrangian_dynamics = get_c_sw_instance(
@@ -143,13 +209,24 @@ class TranslateCirculation_Cgrid(TranslateFortranData2Py):
         return self.slice_output({"vort_c": inputs["vort_c"]})
 
 
-class TranslateVorticityTransport_Cgrid(TranslateFortranData2Py):
-    def __init__(self, grid, namelist, stencil_factory):
+class TranslateVorticityTransport_Cgrid(TranslateDycoreFortranData2Py):
+    def __init__(
+        self,
+        grid,
+        namelist: pace.util.Namelist,
+        stencil_factory: pace.dsl.StencilFactory,
+    ):
         super().__init__(grid, namelist, stencil_factory)
         cgrid_sw_lagrangian_dynamics = get_c_sw_instance(
             grid, namelist, stencil_factory
         )
-        self.compute_func = cgrid_sw_lagrangian_dynamics._vorticitytransport_cgrid
+
+        def compute_func(*args, **kwargs):
+            return compute_vorticitytransport_cgrid(
+                cgrid_sw_lagrangian_dynamics, *args, **kwargs
+            )
+
+        self.compute_func = compute_func
         self.in_vars["data_vars"] = {
             "uc": {},
             "vc": {},

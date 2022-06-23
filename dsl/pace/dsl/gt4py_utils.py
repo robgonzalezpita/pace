@@ -5,7 +5,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import gt4py.storage as gt_storage
 import numpy as np
 
-from pace.dsl.typing import DTypes, Field, Float
+from pace.dsl.typing import DTypes, Field, Float, FloatField
 
 
 try:
@@ -92,6 +92,7 @@ def make_storage_data(
                dummy=dummy,
                axis=axis,
            )
+
     """
     n_dims = len(data.shape)
     if shape is None:
@@ -232,16 +233,17 @@ def make_storage_from_shape(
     *,
     backend: str,
     dtype: DTypes = np.float64,
-    init: bool = False,
     mask: Optional[Tuple[bool, bool, bool]] = None,
+    # [TODO]: temporary storage should be lowered properly to DaCe
+    # and added elsewhere (e.g., remapping)
+    is_temporary: bool = False,
 ) -> Field:
-    """Create a new gt4py storage of a given shape. Do not memoize outputs.
+    """Create a new gt4py storage of a given shape filled with zeros.
 
     Args:
         shape: Shape of the new storage
         origin: Default origin for gt4py stencil calls
         dtype: Data type
-        init: If True, initializes the storage to zero
         mask: Tuple indicating the axes used when initializing the storage
         backend: gt4py backend to use when making the storage
 
@@ -253,7 +255,7 @@ def make_storage_from_shape(
         2) qx = utils.make_storage_from_shape(
                qin.shape, origin=(grid().is_, grid().jsd, kstart)
            )
-        3) q_out = utils.make_storage_from_shape(q_in.shape, origin, init=True)
+        3) q_out = utils.make_storage_from_shape(q_in.shape, origin,)
     """
     if not mask:
         n_dims = len(shape)
@@ -261,9 +263,7 @@ def make_storage_from_shape(
             mask = (False, False, True)  # Assume 1D is a k-field
         else:
             mask = (n_dims * (True,)) + ((3 - n_dims) * (False,))
-
-    storage_func = gt_storage.zeros if init else gt_storage.empty
-    storage = storage_func(
+    storage = gt_storage.zeros(
         backend=backend,
         default_origin=origin,
         shape=shape,
@@ -271,6 +271,8 @@ def make_storage_from_shape(
         mask=mask,
         managed_memory=managed_memory,
     )
+    if is_temporary:
+        storage._istransient = True
     return storage
 
 
@@ -302,32 +304,9 @@ def make_storage_dict(
     return data_dict
 
 
-# def k_slice_operation(key, value, ki, dictionary):
-#     if isinstance(value, gt_storage.storage.Storage):
-#         shape = value.shape
-#         mask = dictionary[key].mask if key in dictionary else (True, True, True)
-#         if len(shape) == 1:  # K-field
-#             if mask[2]:
-#                 shape = (1, 1, len(ki))
-#                 dictionary[key] = make_storage_data(value[ki], shape, read_only=True)
-#         elif len(shape) == 2:  # IK-field
-#             if not mask[1]:
-#                 dictionary[key] = make_storage_data(
-#                     value[:, ki], (shape[0], 1, len(ki)), read_only=True
-#                 )
-#         else:  # IJK-field
-#             dictionary[key] = make_storage_data(
-#                 value[:, :, ki], (shape[0], shape[1], len(ki)), read_only=True
-#             )
-#     else:
-#         dictionary[key] = value
-
-
 def storage_dict(st_dict, names, shape, origin, *, backend: str):
     for name in names:
-        st_dict[name] = make_storage_from_shape(
-            shape, origin, init=True, backend=backend
-        )
+        st_dict[name] = make_storage_from_shape(shape, origin, backend=backend)
 
 
 def get_kstarts(column_info, npz):
@@ -482,3 +461,22 @@ def stack(tup, axis: int = 0, out=None):
 def device_sync(backend: str) -> None:
     if cp and is_gpu_backend(backend):
         cp.cuda.Device(0).synchronize()
+
+
+def split_cartesian_into_storages(var: FloatField):
+    """
+    Provided a storage of dims [X_DIM, Y_DIM, CARTESIAN_DIM]
+         or [X_INTERFACE_DIM, Y_INTERFACE_DIM, CARTESIAN_DIM]
+    Split it into separate 2D storages for each cartesian
+    dimension, and return these in a list.
+    """
+    var_data = []
+    for cart in range(3):
+        var_data.append(
+            make_storage_data(
+                asarray(var.data, type(var.data))[:, :, cart],
+                var.data.shape[0:2],
+                backend=var.backend,
+            )
+        )
+    return var_data

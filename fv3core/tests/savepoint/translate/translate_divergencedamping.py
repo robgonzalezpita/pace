@@ -1,17 +1,23 @@
 from typing import Optional
 
 import fv3core.stencils.divergence_damping
-from pace.stencils.testing import TranslateFortranData2Py
+import pace.dsl
+import pace.util
+from pace.stencils.testing import TranslateDycoreFortranData2Py
 
 
-class TranslateDivergenceDamping(TranslateFortranData2Py):
-    def __init__(self, grid, namelist, stencil_factory):
+class TranslateDivergenceDamping(TranslateDycoreFortranData2Py):
+    def __init__(
+        self,
+        grid,
+        namelist: pace.util.Namelist,
+        stencil_factory: pace.dsl.StencilFactory,
+    ):
         super().__init__(grid, namelist, stencil_factory)
         self.in_vars["data_vars"] = {
             "u": {},
             "v": {},
             "va": {},
-            "u_contra_dyc": {"serialname": "ptc"},
             "v_contra_dxc": {"serialname": "vort"},
             "ua": {},
             "divg_d": {},

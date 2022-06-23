@@ -40,20 +40,15 @@ T="$(date +%s)"
 test -n "$1" || exitError 1001 ${LINENO} "must pass an argument"
 test -n "${slave}" || exitError 1005 ${LINENO} "slave is not defined"
 
-# GTC backend name fix: passed as gtc_gt_* but their real name are gtc:gt:*
-#                       OR gtc_* but their real name is gtc:*
 input_backend="$2"
-if [[ $input_backend = gtc_gt_* ]] ; then
-    # sed explained: replace _ with :, two times
-    input_backend=`echo $input_backend | sed 's/_/:/;s/_/:/'`
-fi
-if [[ $input_backend = gtc_* ]] ; then
+if [[ $input_backend = gt_* ]] ; then
     # sed explained: replace _ with :
     input_backend=`echo $input_backend | sed 's/_/:/'`
 fi
 
 JENKINS_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 BUILDENV_DIR=$JENKINS_DIR/../buildenv
+PACE_DIR=$JENKINS_DIR/../
 
 # Read arguments
 action="$1"
@@ -71,12 +66,10 @@ test -f ${BUILDENV_DIR}/machineEnvironment.sh || exitError 1201 ${LINENO} "canno
 export python_env=${python_env}
 echo "PYTHON env ${python_env}"
 
-
-# If the backend is a GTC backend we fetch the caches
-if [[ $backend != *numpy* ]];then
-    echo "Fetching for exisintg gt_caches"
-    . ${JENKINS_DIR}/actions/fetch_caches.sh $backend $experiment
-fi
+# NOTE: All backends are GTC backends now, so fetch caches
+echo "Fetching existing gt_caches"
+(cd ${PACE_DIR}/fv3gfs-physics && ${JENKINS_DIR}/fetch_caches.sh $backend $experiment physics)
+cd ${PACE_DIR}
 
 # load machine dependent environment
 if [ ! -f ${BUILDENV_DIR}/env.${host}.sh ] ; then
@@ -128,8 +121,6 @@ if grep -q "parallel" <<< "${script}"; then
     fi
 fi
 
-# get the test data version from the Makefile
-export DATA_VERSION=`grep "FORTRAN_SERIALIZED_DATA_VERSION=" Makefile  | cut -d '=' -f 2`
 
 # Set the SCRATCH directory to the working directory if not set (e.g. for running on gce)
 if [ -z ${SCRATCH} ] ; then
@@ -137,10 +128,8 @@ if [ -z ${SCRATCH} ] ; then
 fi
 
 # Set the host data head directory location
-export TEST_DATA_DIR="${SCRATCH}/jenkins/scratch/fv3core_fortran_data/${DATA_VERSION}"
+export TEST_DATA_ROOT="${SCRATCH}/jenkins/scratch/fv3core_fortran_data/"
 export FV3_STENCIL_REBUILD_FLAG=False
-# Set the host data location
-export TEST_DATA_HOST="${TEST_DATA_DIR}/${experiment}/"
 export EXPERIMENT=${experiment}
 if [ -z ${JENKINS_TAG} ]; then
     export JENKINS_TAG=${JOB_NAME}${BUILD_NUMBER}
@@ -173,7 +162,6 @@ if [ ${python_env} == "virtualenv" ]; then
 	export MPIRUN_CALL="srun"
     fi
     export PACE_PATH="${JENKINS_DIR}/../"
-    export TEST_DATA_RUN_LOC=${TEST_DATA_HOST}
 fi
 
 export DOCKER_BUILDKIT=1

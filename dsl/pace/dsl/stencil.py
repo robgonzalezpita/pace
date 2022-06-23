@@ -1,7 +1,9 @@
+import copy
 import dataclasses
 import hashlib
 import inspect
 import re
+from functools import cached_property
 from typing import (
     Any,
     Callable,
@@ -13,26 +15,25 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
+    Type,
     Union,
     cast,
 )
 
+import dace
 import gt4py
 import numpy as np
 from gt4py import gtscript
 from gt4py.storage.storage import Storage
+from gtc.passes.oir_pipeline import DefaultPipeline, OirPipeline
 
+import pace.dsl.gt4py_utils as gt4py_utils
 import pace.util
-from pace.dsl.future_stencil import future_stencil
-from pace.dsl.gt4py_utils import make_storage_from_shape
+from pace.dsl.dace.dace_config import DaceConfig, DaCeOrchestration
+from pace.dsl.dace.orchestrate import SDFGConvertible
 from pace.dsl.typing import Index3D, cast_to_index3d
+from pace.util import testing
 from pace.util.halo_data_transformer import QuantityHaloSpec
-
-
-try:
-    from mpi4py import MPI
-except ImportError:
-    MPI = None
 
 
 @dataclasses.dataclass
@@ -42,10 +43,21 @@ class StencilConfig(Hashable):
     validate_args: bool = True
     format_source: bool = False
     device_sync: bool = False
+    compare_to_numpy: bool = False
+    dace_config: Optional[DaceConfig] = None
 
     def __post_init__(self):
         self.backend_opts = self._get_backend_opts(self.device_sync, self.format_source)
         self._hash = self._compute_hash()
+        # We need a DaceConfig to known our orchestration as part of the build system
+        # but we can't hash it very well (for now). The workaround is to make
+        # sure we have a default Python orchestrated config.
+        if self.dace_config is None:
+            self.dace_config = DaceConfig(
+                communicator=None,
+                backend=self.backend,
+                orchestration=DaCeOrchestration.Python,
+            )
 
     def _compute_hash(self):
         md5 = hashlib.md5()
@@ -84,11 +96,7 @@ class StencilConfig(Hashable):
             "format_source": {
                 "value": False,
             },
-            "skip_passes": {
-                "backend": r"^gtc:(gt|cuda)",
-                "value": ["graph_merge_horizontal_executions"],
-            },
-            "verbose": {"backend": r"^gtc:(gt|cuda)", "value": False},
+            "verbose": {"backend": r"(gt:|cuda)", "value": False},
         }
         for name, option in all_backend_opts.items():
             using_option_backend = re.match(option.get("backend", ""), self.backend)
@@ -102,27 +110,160 @@ class StencilConfig(Hashable):
 
         return backend_opts
 
-    @property
-    def stencil_kwargs(self):
+    def stencil_kwargs(
+        self, *, func: Callable[..., None], skip_passes: Iterable[str] = ()
+    ):
         kwargs = {
             "backend": self.backend,
             "rebuild": self.rebuild,
+            "name": func.__module__ + "." + func.__name__,
             **self.backend_opts,
         }
         if not self.is_gpu_backend:
             kwargs.pop("device_sync", None)
+        if skip_passes or kwargs.get("skip_passes", ()):
+            kwargs["oir_pipeline"] = StencilConfig._get_oir_pipeline(
+                list(kwargs.pop("skip_passes", ())) + list(skip_passes)  # type: ignore
+            )
         return kwargs
 
     @property
     def is_gpu_backend(self) -> bool:
-        return self.backend.endswith("cuda") or self.backend.endswith("gpu")
+        return gt4py.backend.from_name(self.backend).storage_info["device"] == "gpu"
 
-    @property
-    def is_gtc_backend(self) -> bool:
-        return self.backend.startswith("gtc")
+    @classmethod
+    def _get_oir_pipeline(cls, skip_passes: Sequence[str]) -> OirPipeline:
+        """Creates a DefaultPipeline with skip_passes properly initialized."""
+        step_map = {step.__name__: step for step in DefaultPipeline.all_steps()}
+        skip_steps = [step_map[pass_name] for pass_name in skip_passes]
+        return DefaultPipeline(skip=skip_steps)
 
 
-class FrozenStencil:
+def report_difference(args, kwargs, args_copy, kwargs_copy, function_name, gt_id):
+    report_head = f"comparing against numpy for func {function_name}, gt_id {gt_id}:"
+    report_segments = []
+    for i, (arg, numpy_arg) in enumerate(zip(args, args_copy)):
+        if isinstance(arg, pace.util.Quantity):
+            arg = arg.storage
+            numpy_arg = numpy_arg.storage
+        if isinstance(arg, np.ndarray):
+            report_segments.append(report_diff(arg, numpy_arg, label=f"arg {i}"))
+    for name in kwargs:
+        if isinstance(kwargs[name], pace.util.Quantity):
+            kwarg = kwargs[name].data
+            numpy_kwarg = kwargs_copy[name].data
+        else:
+            kwarg = kwargs[name]
+            numpy_kwarg = kwargs_copy[name]
+        if isinstance(kwarg, np.ndarray):
+            report_segments.append(
+                report_diff(kwarg, numpy_kwarg, label=f"kwarg {name}")
+            )
+    report_body = "".join(report_segments)
+    if len(report_body) > 0:
+        print("")  # newline
+        print(report_head + report_body)
+
+
+def report_diff(arg: np.ndarray, numpy_arg: np.ndarray, label) -> str:
+    metric_err = testing.compare_arr(arg, numpy_arg)
+    nans_match = np.logical_and(np.isnan(arg), np.isnan(numpy_arg))
+    n_points = np.product(arg.shape)
+    failures_14 = n_points - np.sum(
+        np.logical_or(
+            nans_match,
+            metric_err < 1e-14,
+        )
+    )
+    failures_10 = n_points - np.sum(
+        np.logical_or(
+            nans_match,
+            metric_err < 1e-10,
+        )
+    )
+    failures_8 = n_points - np.sum(
+        np.logical_or(
+            nans_match,
+            metric_err < 1e-10,
+        )
+    )
+    greatest_error = np.max(metric_err[~np.isnan(metric_err)])
+    if greatest_error == 0.0 and failures_14 == 0:
+        report = ""
+    else:
+        report = f"\n    {label}: "
+        report += f"max_err={greatest_error}"
+        if failures_14 > 0:
+            report += f" 1e-14 failures: {failures_14}"
+        if failures_10 > 0:
+            report += f" 1e-10 failures: {failures_10}"
+        if failures_8 > 0:
+            report += f" 1e-8 failures: {failures_8}"
+    return report
+
+
+class CompareToNumpyStencil:
+    """
+    A wrapper over FrozenStencil which executes a numpy version of the stencil as well,
+    and compares the results.
+    """
+
+    def __init__(
+        self,
+        func: Callable[..., None],
+        origin: Union[Tuple[int, ...], Mapping[str, Tuple[int, ...]]],
+        domain: Tuple[int, ...],
+        stencil_config: StencilConfig,
+        externals: Optional[Mapping[str, Any]] = None,
+        skip_passes: Optional[Tuple[str, ...]] = None,
+    ):
+
+        self._actual = FrozenStencil(
+            func=func,
+            origin=origin,
+            domain=domain,
+            stencil_config=stencil_config,
+            externals=externals,
+            skip_passes=skip_passes,
+        )
+        numpy_stencil_config = StencilConfig(
+            backend="numpy",
+            rebuild=stencil_config.rebuild,
+            validate_args=stencil_config.validate_args,
+            format_source=True,
+            device_sync=None,
+            dace_config=stencil_config.dace_config,
+        )
+        self._numpy = FrozenStencil(
+            func=func,
+            origin=origin,
+            domain=domain,
+            stencil_config=numpy_stencil_config,
+            externals=externals,
+            skip_passes=skip_passes,
+        )
+        self._func_name = func.__name__
+
+    def __call__(
+        self,
+        *args,
+        **kwargs,
+    ) -> None:
+        args_copy = copy.deepcopy(args)
+        kwargs_copy = copy.deepcopy(kwargs)
+        self._actual(*args, **kwargs)
+        self._numpy(*args_copy, **kwargs_copy)
+        report_difference(
+            args,
+            kwargs,
+            args_copy,
+            kwargs_copy,
+            self._func_name,
+            self._actual.stencil_object._gt_id_,
+        )
+
+
+class FrozenStencil(SDFGConvertible):
     """
     Wrapper for gt4py stencils which stores origin and domain at compile time,
     and uses their stored values at call time.
@@ -139,7 +280,7 @@ class FrozenStencil:
         domain: Tuple[int, ...],
         stencil_config: StencilConfig,
         externals: Optional[Mapping[str, Any]] = None,
-        skip_passes: Optional[Tuple[str, ...]] = None,
+        skip_passes: Tuple[str, ...] = (),
     ):
         """
         Args:
@@ -159,29 +300,25 @@ class FrozenStencil:
 
         if externals is None:
             externals = {}
-
-        stencil_function = gtscript.stencil
-        stencil_kwargs = {**self.stencil_config.stencil_kwargs}
-
-        # Enable distributed compilation if running in parallel
-        if MPI is not None and MPI.COMM_WORLD.Get_size() > 1:
-            stencil_function = future_stencil
-            stencil_kwargs["wrapper"] = self
-        else:
-            # future stencil provides this information and
-            # we want to be consistent with the naming whether we are
-            # running in parallel or not (so we use the same cache)
-            stencil_kwargs["name"] = func.__module__ + "." + func.__name__
-
-        if skip_passes and self.stencil_config.is_gtc_backend:
-            stencil_kwargs["skip_passes"] = skip_passes
-
-        self.stencil_object: gt4py.StencilObject = stencil_function(
-            definition=func,
-            externals=externals,
-            **stencil_kwargs,
+        self.externals = externals
+        self.func = func
+        self.stencil_kwargs = self.stencil_config.stencil_kwargs(
+            skip_passes=skip_passes, func=self.func
         )
-        """generated stencil object returned from gt4py."""
+        self._stencil_run_kwargs = None
+        self._field_origins = None
+        self.stencil_object: Optional[gt4py.StencilObject] = None
+        self._written_fields: List[str] = []
+
+        self._argument_names = tuple(inspect.getfullargspec(func).args)
+
+        if "dace" in self.stencil_config.backend:
+            dace.Config.set(
+                "default_build_folder",
+                value="{gt_cache}/dacecache".format(
+                    gt_cache=gt4py.config.cache_settings["dir_name"]
+                ),
+            )
 
         self._argument_names = tuple(inspect.getfullargspec(func).args)
 
@@ -189,27 +326,45 @@ class FrozenStencil:
             len(self._argument_names) > 0
         ), "A stencil with no arguments? You may be double decorating"
 
-        field_info = self.stencil_object.field_info
+        # Keep compilation at __init__ if we are not orchestrated.
+        # If we orchestrate, move the compilation at call time to make sure
+        # disable_codegen do not lead to call to uncompiled stencils, which fails
+        # silently
+        if not self.stencil_config.dace_config.is_dace_orchestrated():
+            self.stencil_object = self._compile()
+
+    def _compile(self):
+        stencil_object: gt4py.StencilObject = gtscript.stencil(
+            definition=self.func, externals=self.externals, **self.stencil_kwargs
+        )
+        field_info = stencil_object.field_info
         self._field_origins: Dict[
             str, Tuple[int, ...]
         ] = FrozenStencil._compute_field_origins(field_info, self.origin)
         """mapping from field names to field origins"""
-
         self._stencil_run_kwargs: Dict[str, Any] = {
             "_origin_": self._field_origins,
             "_domain_": self.domain,
         }
+        self._written_fields = FrozenStencil._get_written_fields(field_info)
 
-        self._written_fields: List[str] = FrozenStencil._get_written_fields(field_info)
+        # When orchestrating with DaCe, cache the frozen stencil for
+        # calls in __sdfg__ generation
+        if self.stencil_config.dace_config.is_dace_orchestrated():
+            self._frozen_stencil = stencil_object.freeze(
+                origin=self._field_origins,
+                domain=self.domain,
+            )
 
-    def __call__(
-        self,
-        *args,
-        **kwargs,
-    ) -> None:
+        return stencil_object
+
+    def __call__(self, *args, **kwargs) -> None:
         args_list = list(args)
         _convert_quantities_to_storage(args_list, kwargs)
         args = tuple(args_list)
+        if self.stencil_object is None:
+            self.stencil_object = self._compile()
+
         if self.stencil_config.validate_args:
             if __debug__ and "origin" in kwargs:
                 raise TypeError("origin cannot be passed to FrozenStencil call")
@@ -284,6 +439,43 @@ class FrozenStencil:
             and bool(field_info[field_name].access & gt4py.definitions.AccessKind.WRITE)
         ]
         return write_fields
+
+    @classmethod
+    def _get_oir_pipeline(cls, skip_passes: Sequence[str]) -> OirPipeline:
+        step_map = {step.__name__: step for step in DefaultPipeline.all_steps()}
+        skip_steps = [step_map[pass_name] for pass_name in skip_passes]
+        return DefaultPipeline(skip=skip_steps)
+
+    @cached_property
+    def _frozen_stencil(self):
+        old_codegen_flag = None
+        if "disable_code_generation" in self.stencil_kwargs:
+            self.stencil_kwargs.pop("disable_code_generation")
+        stencil_object_no_codegen = self._compile()
+        return stencil_object_no_codegen.freeze(
+            origin=self._field_origins,
+            domain=self.domain,
+        )
+
+    def __sdfg__(self, *args, **kwargs):
+        """Implemented SDFG generation"""
+        args_as_kwargs = dict(zip(self._argument_names, args))
+        self._stencil_sdfg = self._frozen_stencil.__sdfg__(**args_as_kwargs, **kwargs)
+        return self._stencil_sdfg
+
+    def __sdfg_signature__(self):
+        """Implemented SDFG signature lookup"""
+        return self._frozen_stencil.__sdfg_signature__()
+
+    def __sdfg_closure__(self, *args, **kwargs):
+        """Implemented SDFG closure build"""
+        return self._frozen_stencil.__sdfg_closure__(*args, **kwargs)
+
+    def closure_resolver(self, constant_args, given_args, parent_closure=None):
+        """Implemented SDFG closure resolver build"""
+        return self._frozen_stencil.closure_resolver(
+            constant_args, given_args, parent_closure=parent_closure
+        )
 
 
 def _convert_quantities_to_storage(args, kwargs):
@@ -636,7 +828,9 @@ class GridIndexing:
         # we don't allocate
         # Refactor is filed in ticket DSL-820
 
-        temp_storage = make_storage_from_shape(shape, origin, backend=backend)
+        temp_storage = gt4py_utils.make_storage_from_shape(
+            shape, origin, backend=backend
+        )
         origin, extent = self.get_origin_domain(dims)
         temp_quantity = pace.util.Quantity(
             temp_storage,
@@ -688,7 +882,7 @@ class StencilFactory:
         origin: Union[Tuple[int, ...], Mapping[str, Tuple[int, ...]]],
         domain: Tuple[int, ...],
         externals: Optional[Mapping[str, Any]] = None,
-        skip_passes: Optional[Tuple[str, ...]] = None,
+        skip_passes: Tuple[str, ...] = (),
     ) -> FrozenStencil:
         """
         Args:
@@ -699,7 +893,11 @@ class StencilFactory:
             externals: compile-time external variables required by stencil
             skip_passes: compiler passes to skip when building stencil
         """
-        return FrozenStencil(
+        if self.config.compare_to_numpy:
+            cls: Type = CompareToNumpyStencil
+        else:
+            cls = FrozenStencil
+        return cls(
             func=func,
             origin=origin,
             domain=domain,
@@ -714,7 +912,7 @@ class StencilFactory:
         compute_dims: Sequence[str],
         compute_halos: Sequence[int] = tuple(),
         externals: Optional[Mapping[str, Any]] = None,
-        skip_passes: Optional[Tuple[str, ...]] = None,
+        skip_passes: Tuple[str, ...] = (),
     ) -> FrozenStencil:
         """
         Initialize a stencil from dimensions and number of halo points.

@@ -1,4 +1,3 @@
-import sys
 from typing import List
 
 from setuptools import find_namespace_packages, setup
@@ -13,8 +12,6 @@ requirements = [
     "typing_extensions>=3.7.4",
     "f90nml>=1.1.0",
 ]
-if sys.version_info.major == 3 and sys.version_info.minor == 6:
-    requirements.append("dataclasses")
 
 test_requirements: List[str] = []
 
@@ -26,18 +23,17 @@ with open("HISTORY.md") as history_file:
     history = history_file.read()
 
 setup(
-    author="Vulcan Technologies LLC",
-    author_email="jeremym@vulcan.com",
-    python_requires=">=3.6",
+    author="Allen Institute of Artificial Intelligence",
+    author_email="jeremym@allenai.org",
+    python_requires=">=3.8",
     classifiers=[
         "Development Status :: 2 - Pre-Alpha",
         "Intended Audience :: Developers",
         "License :: OSI Approved :: BSD License",
         "Natural Language :: English",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.5",
-        "Programming Language :: Python :: 3.6",
-        "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
     ],
     install_requires=requirements,
     setup_requires=setup_requirements,
@@ -52,6 +48,6 @@ setup(
     packages=find_namespace_packages(include=["pace.*"]),
     include_package_data=True,
     url="https://github.com/ai2cm/pace",
-    version="0.7.0",
+    version="0.9.0",
     zip_safe=False,
 )

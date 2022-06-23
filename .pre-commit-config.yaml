@@ -2,7 +2,8 @@ repos:
 -   repo: https://github.com/psf/black
     rev: 20.8b1
     hooks:
-    -   id: black
+    - id: black
+      additional_dependencies: ["click==8.0.4"]
 
 -   repo: https://github.com/pre-commit/mirrors-isort
     rev: v5.4.2
@@ -45,6 +46,14 @@ repos:
         (?x)^(
         stencils/pace/stencils/testing/grid.py |
         )$
+    - id: mypy
+      name: mypy-driver
+      args: [
+          --no-strict-optional,
+          --ignore-missing-imports,
+          --follow-imports, skip  # needed so we only test enabled files
+        ]
+      files: driver
     - id: mypy
       name: mypy-physics
       args: [
