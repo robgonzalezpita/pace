@@ -36,7 +36,7 @@ backoff==1.11.1
     # via fv3config
 backports.entry-points-selectable==1.1.0
     # via virtualenv
-black==19.10b0
+black==22.3.0
     # via
     #   -r fv3gfs-physics/requirements.txt
     #   -r pace-util/requirements.txt
